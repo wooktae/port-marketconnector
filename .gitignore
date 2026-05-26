@@ -1,0 +1,31 @@
+﻿__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+.env.*
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Sensitive/local token files
+access_token.txt
+token*.txt
+*.token
+
+# Local outputs / dumps
+*.csv
+*.xlsx
+*.parquet
+*.pkl
+*.pickle
+*.dump
+*.tmp
+*.html
+*.jsonl
+
+# Local test / scratch files
+test*.py
+debug_*.py
