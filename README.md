@@ -18,7 +18,6 @@ KIS 국내 주식 API 연동을 위한 Python 기반 market connector 마이크�
 ## 파일 구조 요약
 
 - `connector_app.py`: 메인 Flask connector API. 실행 API와 View 조회 API를 함께 제공한다.
-- `app.py`: 단순/legacy Flask 현재가 API wrapper.
 - `token_manager.py`: access token 파일 처리, token 발급, token 갱신 helper.
 - `config.py`: KIS 및 계좌 관련 로컬 설정. 모든 값은 민감정보로 취급한다.
 - `connector_db.py`: connector/legacy 테이블용 PostgreSQL repository helper.
@@ -29,7 +28,6 @@ KIS 국내 주식 API 연동을 위한 Python 기반 market connector 마이크�
 - `connector_balance.py`: 잔고/보유 조회 및 connector snapshot 저장 흐름.
 - `connector_order_check.py`: 주문/체결 조회 및 order event/fill 저장 흐름.
 - `connector_quote_realtime.py`, `connector_quote_closed.py`: 실시간 시세 및 기간 시세 조회 흐름. 옵션에 따라 DB 저장 가능.
-- `buy.py`, `balance.py`, `order_check.py`, `get_price_realtime.py`, `get_price_closed.py`: 이전 방식 또는 단순 실행용 script 후보.
 
 ## Flask API 요약
 
@@ -60,7 +58,7 @@ View API는 조회 중심이지만 DB 접근에 의존한다.
 - `GET /api/v1/view/quotes/eod`
 - `GET /api/v1/view/strategy/trades/recent`
 
-`app.py`는 `GET /api/v1/price`를 제공하며 실시간 현재가 조회 함수로 위임한다.
+`connector_app.py`는 `GET /api/v1/price` legacy alias도 제공한다.
 
 ## 주요 기능 영역
 
@@ -153,7 +151,6 @@ pip install flask requests psycopg
 
 ```powershell
 python connector_app.py
-python app.py
 ```
 
 위 명령은 route 사용 방식에 따라 브로커 API 접근으로 이어질 수 있으므로 실행 위험 명령으로 취급한다.
@@ -163,19 +160,13 @@ python app.py
 문서 작업 중에는 아래 명령을 실행하지 않는다.
 
 - `python token_manager.py`
-- `python app.py`
 - `python connector_app.py`
-- `python buy.py`
 - `python connector_buy.py`
 - `python connector_sell.py`
 - `python connector_cancel.py`
 - `python connector_modify.py`
-- `python balance.py`
 - `python connector_balance.py`
-- `python order_check.py`
 - `python connector_order_check.py`
-- `python get_price_realtime.py`
-- `python get_price_closed.py`
 - `python connector_quote_realtime.py`
 - `python connector_quote_closed.py`
 

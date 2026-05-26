@@ -11,6 +11,12 @@
 ### Changed
 
 - 초기 문서 초안을 한국어 기준으로 정리했다.
+- legacy/단순 실행용 Python 파일 정리 결과에 맞춰 README와 AGENTS의 entrypoint 목록을 갱신했다.
+
+### Removed
+
+- legacy/단순 실행용 후보였던 `app.py`, `buy.py`, `balance.py`, `order_check.py`, `get_price_realtime.py`, `get_price_closed.py`를 제거했다.
+- Python bytecode cache인 `__pycache__/`를 제거했다.
 
 ### Notes
 

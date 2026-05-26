@@ -42,16 +42,15 @@
 
 ## 실행 위험 entrypoint
 - `token_manager.py`: token 파일 읽기/쓰기/삭제, token 발급/갱신 가능
-- `app.py`: Flask app 실행 및 `/api/v1/price`를 통한 실시간 시세 조회 가능
 - `connector_app.py`: 메인 Flask connector API 실행, 브로커 API 호출 및 DB 저장 route 포함
-- `buy.py`, `connector_buy.py`: 매수 주문 제출 가능
+- `connector_buy.py`: 매수 주문 제출 가능
 - `connector_sell.py`: 매도 주문 제출 가능
 - `connector_cancel.py`: 주문 취소 요청 가능
 - `connector_modify.py`: 주문 정정 요청 가능
-- `balance.py`, `connector_balance.py`: 잔고/보유 조회 및 잔고/포지션 snapshot 저장 가능
-- `order_check.py`, `connector_order_check.py`: 주문/체결 조회 및 주문 이벤트/체결 저장 가능
-- `get_price_realtime.py`, `connector_quote_realtime.py`: 실시간/현재가 조회 가능
-- `get_price_closed.py`, `connector_quote_closed.py`: 기간 시세 조회 가능
+- `connector_balance.py`: 잔고/보유 조회 및 잔고/포지션 snapshot 저장 가능
+- `connector_order_check.py`: 주문/체결 조회 및 주문 이벤트/체결 저장 가능
+- `connector_quote_realtime.py`: 실시간/현재가 조회 가능
+- `connector_quote_closed.py`: 기간 시세 조회 가능
 
 ## DB 쓰기 위험
 - `connector_db.py`는 connector 및 legacy 테이블에 쓰는 repository helper를 포함한다.
