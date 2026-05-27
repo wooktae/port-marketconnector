@@ -122,7 +122,9 @@ View API는 조회 중심이지만 DB 접근에 의존한다.
 
 `connector_db.py`는 connector account, API call log, balance snapshot, position snapshot, quote, order request, order event, fill, legacy balance/holding/trade order, View 조회 helper를 포함한다.
 
-`config.py`와 DB connection string은 민감정보로 취급한다. 실제 값을 문서에 기록하지 않는다. 운영 환경에서는 환경변수나 로컬 전용 설정으로 분리하는 방향이 적합하다.
+DB 접속정보는 `db_config.py`의 `get_db_config()`를 통해 `INTEREST_DB_*` 환경변수에서 읽는다. `INTEREST_DB_PASSWORD`는 기본값이 없으며 비어 있으면 실행 시 `RuntimeError`가 발생한다.
+
+`config.py`와 DB password는 민감정보로 취급한다. 실제 값을 문서에 기록하지 않는다.
 
 ## 설정 방법
 
@@ -141,7 +143,11 @@ pip install flask requests psycopg
 - KIS base URL: `[REDACTED]`
 - 계좌번호: `[REDACTED]`
 - 계좌 상품 코드: `[REDACTED]`
-- PostgreSQL connection string: `[REDACTED]`
+- `INTEREST_DB_HOST`: PostgreSQL host. 기본값은 `localhost`.
+- `INTEREST_DB_PORT`: PostgreSQL port. 기본값은 `5433`.
+- `INTEREST_DB_NAME`: PostgreSQL database name. 기본값은 `interest_crawler`.
+- `INTEREST_DB_USER`: PostgreSQL user. 기본값은 `postgres`.
+- `INTEREST_DB_PASSWORD`: PostgreSQL password. 기본값 없음. 예시는 `[REDACTED]`.
 
 ## 실행 방법
 

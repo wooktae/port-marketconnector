@@ -6,13 +6,7 @@ from typing import Any, Dict, List, Optional
 import psycopg
 from psycopg.rows import dict_row
 
-DB_CONN_STR = """
-host=localhost
-port=5433
-dbname=interest_crawler
-user=postgres
-password=doflwhsk3768!
-"""
+from db_config import get_db_config
 
 
 def _json_default(obj):
@@ -28,7 +22,7 @@ def to_jsonb(value: Any) -> str:
 
 
 def get_conn():
-    return psycopg.connect(DB_CONN_STR)
+    return psycopg.connect(**get_db_config())
 
 
 # ---------------------------------------------------------

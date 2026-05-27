@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## 2026-05-27
+
+### Changed
+
+- DB 접속정보를 `INTEREST_DB_*` 환경변수 기반으로 외부화했다.
+- `connector_db.py`의 password 하드코딩을 제거하고 `db_config.py`의 공통 `get_db_config()`를 사용하도록 변경했다.
+- README에 DB 접속 환경변수 설명을 추가했다.
+
+### Notes
+
+- 실제 DB 접속, Flask app 실행, KIS/브로커 API 호출, token 발급/갱신, 주문/잔고/시세/체결 조회는 실행하지 않았다.
+- DB password 실제 값은 문서에 기록하지 않았다.
+
 ## 2026-05-26
 
 ### Added
