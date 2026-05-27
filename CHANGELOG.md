@@ -7,6 +7,9 @@
 - DB 접속정보를 `INTEREST_DB_*` 환경변수 기반으로 외부화했다.
 - `connector_db.py`의 password 하드코딩을 제거하고 `db_config.py`의 공통 `get_db_config()`를 사용하도록 변경했다.
 - README에 DB 접속 환경변수 설명을 추가했다.
+- PostgreSQL 기본 DB name을 `portfolio`로 정리하고, AWS Migration 준비 관점의 단일 DB `portfolio` + schema-per-domain 구조를 README에 반영했다.
+- 이 모듈의 DB connection `search_path`를 `connector, execution, legacy, reference, public`으로 문서화했다.
+- schema-per-domain 전환 후에도 기존 SQL은 connection `search_path` 기반으로 동작한다는 설명을 추가했다.
 
 ### Notes
 

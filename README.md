@@ -124,6 +124,16 @@ View API는 조회 중심이지만 DB 접근에 의존한다.
 
 DB 접속정보는 `db_config.py`의 `get_db_config()`를 통해 `INTEREST_DB_*` 환경변수에서 읽는다. `INTEREST_DB_PASSWORD`는 기본값이 없으며 비어 있으면 실행 시 `RuntimeError`가 발생한다.
 
+로컬 PostgreSQL 기본 DB name은 `portfolio`다. AWS Migration 준비 관점에서도 단일 PostgreSQL DB `portfolio` 안에 domain별 schema를 두는 schema-per-domain 구조를 기준으로 문서화한다.
+
+이 모듈의 DB connection `search_path`는 아래 순서를 기준으로 적용한다.
+
+```text
+connector, execution, legacy, reference, public
+```
+
+public에 있던 테이블은 domain schema로 이동되었지만, 이 모듈의 기존 SQL은 schema-qualified table name으로 바꾸지 않고 connection `search_path` 기반으로 동작한다. 따라서 기존 API 경로, 함수명, 테이블명, 브로커 요청 의미는 유지한다.
+
 `config.py`와 DB password는 민감정보로 취급한다. 실제 값을 문서에 기록하지 않는다.
 
 ## 설정 방법
@@ -145,7 +155,8 @@ pip install flask requests psycopg
 - 계좌 상품 코드: `[REDACTED]`
 - `INTEREST_DB_HOST`: PostgreSQL host. 기본값은 `localhost`.
 - `INTEREST_DB_PORT`: PostgreSQL port. 기본값은 `5433`.
-- `INTEREST_DB_NAME`: PostgreSQL database name. 기본값은 `interest_crawler`.
+- `INTEREST_DB_NAME`: PostgreSQL database name. 기본값은 `portfolio`.
+- `PORTFOLIO_DB_NAME`: 포트폴리오 공통 DB name을 별도 환경변수로 설명하거나 사용하는 경우에도 기본값은 `portfolio`로 맞춘다.
 - `INTEREST_DB_USER`: PostgreSQL user. 기본값은 `postgres`.
 - `INTEREST_DB_PASSWORD`: PostgreSQL password. 기본값 없음. 예시는 `[REDACTED]`.
 
@@ -182,6 +193,7 @@ python connector_app.py
 
 - token 값, app key, app secret, 계좌번호, DB 접속정보, 원본 connection string을 출력하지 않는다.
 - `access_token.txt` 같은 token 파일을 읽거나 인용하지 않는다.
+- 민감정보는 환경변수 또는 source control 밖의 로컬 설정으로 관리하고, 실제 password/token/account/webhook 값을 문서에 쓰지 않는다.
 - 문서에 필요한 예시는 `[REDACTED]`로 마스킹한다.
 - debug/output dump 파일은 운영 소스로 단정하지 않고 로컬 산출물 또는 후보로만 표현한다.
 
