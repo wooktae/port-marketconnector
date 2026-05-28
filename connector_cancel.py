@@ -1,3 +1,9 @@
+"""KIS 국내 주식 주문 취소 wrapper.
+
+원 주문 요청 ID를 기준으로 broker 주문 context를 찾아 취소 요청을 제출한다.
+CLI 실행 시 외부 주문 취소 API 호출과 DB 상태 갱신이 발생할 수 있다.
+"""
+
 import argparse
 from typing import Optional
 
@@ -17,6 +23,7 @@ def cancel_order(
     qty: Optional[int] = None,
     reason: Optional[str] = None,
 ):
+    """원 주문 요청 ID 기준으로 취소 주문을 제출한다."""
     return submit_rvsecncl_order(
         action_type="CANCEL",
         api_name=API_NAME,

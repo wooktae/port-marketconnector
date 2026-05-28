@@ -1,3 +1,9 @@
+"""PostgreSQL repository helper 모음.
+
+connector/legacy 테이블의 저장, 갱신, 조회 helper를 제공한다.
+DB 접속 설정은 환경변수 기반 `db_config.get_db_config()`에 의존하며, 호출 시 실제 DB 접근이 발생한다.
+"""
+
 import json
 from datetime import date, datetime
 from decimal import Decimal
@@ -22,6 +28,7 @@ def to_jsonb(value: Any) -> str:
 
 
 def get_conn():
+    """환경변수 기반 DB 설정으로 PostgreSQL connection을 생성한다."""
     return psycopg.connect(**get_db_config())
 
 

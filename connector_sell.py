@@ -1,3 +1,9 @@
+"""KIS 국내 주식 현금 매도 주문 wrapper.
+
+공통 주문 제출 모듈에 매도 TR_ID와 주문 입력값을 전달한다.
+CLI 실행 시 브로커 주문 제출과 DB 주문 요청 저장이 발생할 수 있다.
+"""
+
 import argparse
 from typing import Optional
 
@@ -28,6 +34,7 @@ def sell_stock(
     signal_score: Optional[float] = None,
     signal_position_size: Optional[float] = None,
 ):
+    """매도 주문 요청을 공통 주문 제출 흐름으로 위임한다."""
     return submit_cash_order(
         request_type="SELL",
         api_name=API_NAME,

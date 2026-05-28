@@ -1,3 +1,9 @@
+"""Flask View API용 조회 응답 조립 서비스.
+
+DB repository helper의 조회 결과를 JSON 응답에 맞게 직렬화하고 timeline/tree 형태로 재구성한다.
+브로커 API 호출은 하지 않지만 DB 조회에 의존한다.
+"""
+
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -472,6 +478,7 @@ def _build_timeline_summary(timeline: List[Dict[str, Any]]) -> str:
     return " -> ".join(parts)
 
 def get_view_order_detail(order_request_id: int) -> Optional[Dict[str, Any]]:
+    """단일 주문 요청의 부모/자식 주문, event, fill 정보를 상세 timeline으로 조립한다."""
     detail = get_order_request_detail(order_request_id)
     if not detail:
         return None

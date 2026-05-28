@@ -1,3 +1,9 @@
+"""KIS 주문/체결 조회와 DB 동기화 흐름.
+
+주문/체결 내역 API 응답을 order event, fill, legacy 주문 테이블에 반영한다.
+직접 조회 결과와 broad search fallback을 구분해 broker 주문번호 매핑을 보정한다.
+"""
+
 import json
 import time
 from datetime import datetime
@@ -483,6 +489,7 @@ def _process_summary_fallback(
     order_no: Optional[str],
     branch_code: Optional[str],
 ):
+    """상세 주문 목록이 없고 summary만 있는 조회 결과를 단일 주문 event/fill로 보정한다."""
     summary = data.get("output2", {}) or {}
 
     tot_ord_qty = _to_int(summary.get("tot_ord_qty", "0"))
@@ -704,8 +711,38 @@ def fetch_and_save_orders(
         _process_detail_orders(account_id, orders)
         return data
 
+    # ---------------------------------------------------------
+    # direct 조회에서 output1은 비었지만 output2 summary가 있는 경우
+    # ---------------------------------------------------------
+    # 특정 주문번호/종목코드로 조회한 direct output2는 해당 주문의 체결 요약일 가능성이 높다.
+    # 이 상태에서 broad search를 먼저 수행하면, broad output2의 전체 합계/평균가가
+    # 특정 주문에 섞여 잘못된 event/fill 금액이 저장될 수 있다.
+    #
+    # 예:
+    # - HMM 직접 조회 output2: 54주 / 1,109,950원 / 평균 20,554.6296
+    # - broad 조회 output2: 현대해상+HMM 합계 76주 / 1,925,500원 / 평균 25,335.5263
+    # 기존 로직은 broad summary를 HMM 주문에 적용할 수 있었음.
+    # ---------------------------------------------------------
+    direct_summary = data.get("output2", {}) or {}
+    direct_tot_ord_qty = _to_int(direct_summary.get("tot_ord_qty", "0"))
+    direct_tot_ccld_qty = _to_int(direct_summary.get("tot_ccld_qty", "0"))
+    direct_tot_ccld_amt = _to_float(direct_summary.get("tot_ccld_amt", "0"))
+
+    if (stock_code or order_no or branch_code) and (
+        direct_tot_ord_qty > 0 or direct_tot_ccld_qty > 0 or direct_tot_ccld_amt > 0
+    ):
+        print("\n⚠ direct 조회에서 output1은 비었지만 output2 summary가 있어 direct fallback 처리")
+        _process_summary_fallback(
+            account_id=account_id,
+            data=data,
+            stock_code=stock_code,
+            order_no=order_no,
+            branch_code=branch_code,
+        )
+        return data
+
     if try_broad_search_if_empty and (stock_code or order_no or branch_code):
-        print("\n⚠ direct 조회에서 output1 비었어. broad search 1회 재시도")
+        print("\n⚠ direct 조회에서 output1 비었고 direct summary도 부족해. broad search 1회 재시도")
 
         broad_params = _build_params(
             start_date=start_date,

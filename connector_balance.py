@@ -1,3 +1,9 @@
+"""KIS 잔고/보유 조회와 snapshot 저장 흐름.
+
+브로커 잔고 API를 호출하고 connector 및 legacy balance/holding 테이블에 저장할 수 있다.
+실행 시 token 처리, 외부 API 호출, DB 쓰기가 모두 발생할 수 있는 entrypoint다.
+"""
+
 import json
 import time
 from datetime import datetime
@@ -43,6 +49,7 @@ def _to_int(v, default=0):
 
 
 def fetch_and_save_balance():
+    """잔고 API 응답을 파싱해 계좌/보유 snapshot과 legacy 테이블에 저장한다."""
     account_id = ensure_connector_account(
         account_no=PAPER_ACNT,
         account_product_code=ACNT_PRDT_CD,

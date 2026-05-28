@@ -1,3 +1,9 @@
+"""KIS access token 파일 처리와 발급/갱신 helper.
+
+token 파일을 읽고 쓰며 KIS token endpoint를 호출할 수 있다.
+정적 문서화 작업 중에는 실행하거나 token 값을 출력하지 않는다.
+"""
+
 import requests
 import json
 import os

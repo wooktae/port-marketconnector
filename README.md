@@ -28,6 +28,7 @@ KIS 국내 주식 API 연동을 위한 Python 기반 market connector 마이크�
 - `connector_balance.py`: 잔고/보유 조회 및 connector snapshot 저장 흐름.
 - `connector_order_check.py`: 주문/체결 조회 및 order event/fill 저장 흐름.
 - `connector_quote_realtime.py`, `connector_quote_closed.py`: 실시간 시세 및 기간 시세 조회 흐름. 옵션에 따라 DB 저장 가능.
+- `docs/source-file-catalog.md`: AWS Migration 전 파일별 역할, 책임, 운영 주의사항을 정리한 파일 카탈로그.
 
 ## Flask API 요약
 
@@ -207,3 +208,9 @@ git diff --stat
 ```
 
 문서 검증을 위해 Flask, KIS, 브로커, token, 잔고, 보유, 시세, 주문, 체결, 크롤러, DB 명령을 실행하지 않는다.
+
+## 문서화 산출물
+
+2026-05-28 기준으로 `docs/source-file-catalog.md`를 추가해 repository의 주요 Python 소스와 문서 파일을 한글로 정리했다.
+
+Python 파일에는 module docstring과 운영상 중요한 핵심 함수 docstring을 추가했다. 이 변경은 파일 역할과 실행 위험 설명을 위한 주석 정리이며, API 경로, 함수명, DB 테이블명, 브로커 요청 의미, 실행 순서는 변경하지 않았다.

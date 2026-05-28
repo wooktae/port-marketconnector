@@ -1,3 +1,9 @@
+"""매수/매도/취소/정정 주문 제출 공통 흐름.
+
+주문 요청 DB 기록, 브로커 API 호출, 응답 반영, strategy mapping 저장을 담당한다.
+호출 시 token 처리, 외부 주문 API 호출, DB 쓰기가 발생할 수 있다.
+"""
+
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -509,6 +515,7 @@ def submit_cash_order(
     signal_position_size: Optional[float] = None,
     endpoint: str = DEFAULT_ORDER_ENDPOINT,
 ):
+    """현금 매수/매도 주문을 DB에 기록한 뒤 브로커 주문 API로 제출한다."""
     request_type = request_type.upper()
     if request_type not in ("BUY", "SELL"):
         raise ValueError("submit_cash_order는 BUY 또는 SELL만 지원해")
@@ -686,6 +693,7 @@ def submit_rvsecncl_order(
     reason: Optional[str] = None,
     endpoint: str = DEFAULT_RVSE_CNCL_ENDPOINT,
 ):
+    """기존 주문 context를 기준으로 취소/정정 요청을 제출하고 부모 주문 상태를 보정한다."""
     action_type = action_type.upper()
     if action_type not in ("CANCEL", "MODIFY"):
         raise ValueError("submit_rvsecncl_order는 CANCEL 또는 MODIFY만 지원해")

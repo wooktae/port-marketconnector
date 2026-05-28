@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 2026-05-28
+
+### Added
+
+- `docs/source-file-catalog.md`를 추가해 Python 소스와 문서 파일의 역할, 주요 책임, 운영 주의사항을 한글로 정리했다.
+- 주요 Python connector 파일에 module docstring을 추가했다.
+- 잔고/시세/주문/체결/View 조립 등 운영상 중요한 함수에 짧은 function docstring을 추가했다.
+- `docs/worklog/2026-05-28.md` 작업 일지를 추가했다.
+
+### Changed
+
+- README에 파일 카탈로그와 설명 주석 정리 산출물을 반영했다.
+- 미커밋 상태였던 `connector_order_check.py` 변경의 의미를 문서화했다.
+  - direct 조회에서 `output1`이 비어도 `output2` summary가 있으면 broad search보다 direct fallback을 먼저 처리해 broad summary가 특정 주문 event/fill에 섞일 위험을 줄이는 변경이다.
+
+### Notes
+
+- 기능 변경 없음. 이번 작업의 신규 변경은 문서와 설명 주석 정리다.
+- 실제 Flask app 실행, KIS/브로커 API 호출, token 발급/갱신, 주문/잔고/시세/체결 조회, DB DDL/DML은 실행하지 않았다.
+- 민감정보 값은 문서에 기록하지 않았다.
+
 ## 2026-05-27
 
 ### Changed

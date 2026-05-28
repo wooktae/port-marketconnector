@@ -1,3 +1,9 @@
+"""Flask 기반 connector API 진입점.
+
+시세, 잔고, 주문, 주문/체결 조회 실행 API와 View 조회 API를 함께 제공한다.
+route 사용 방식에 따라 브로커 API 호출, token 갱신, DB 쓰기가 발생할 수 있다.
+"""
+
 import os
 from flask import Flask, jsonify, request
 

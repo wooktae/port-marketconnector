@@ -1,3 +1,9 @@
+"""KIS 국내 주식 주문 정정 wrapper.
+
+원 주문 요청 ID를 기준으로 broker 주문 context를 찾아 정정 요청을 제출한다.
+CLI 실행 시 외부 주문 정정 API 호출과 DB 상태 갱신이 발생할 수 있다.
+"""
+
 import argparse
 from typing import Optional
 
@@ -19,6 +25,7 @@ def modify_order(
     order_price: Optional[float] = None,
     reason: Optional[str] = None,
 ):
+    """원 주문 요청 ID 기준으로 정정 주문을 제출한다."""
     return submit_rvsecncl_order(
         action_type="MODIFY",
         api_name=API_NAME,
