@@ -94,4 +94,4 @@ def check_and_refresh_token(response_text):
 
 if __name__ == "__main__":
     t = get_access_token()
-    print("[token_manager] 최종 토큰:", t)
+    print("[token_manager] token issued:", bool(t))
