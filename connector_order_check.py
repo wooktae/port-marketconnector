@@ -482,6 +482,68 @@ def _process_detail_orders(account_id: int, orders: list):
     return legacy_rows
 
 
+def _count_summary_fallback_candidates(
+    stock_code: Optional[str] = None,
+    order_no: Optional[str] = None,
+    branch_code: Optional[str] = None,
+):
+    """
+    output1 empty + output2 summary fallback 적용 가능 후보를 계산한다.
+
+    안전 원칙:
+    - summary fallback은 active 주문 후보가 정확히 1건일 때만 허용한다.
+    - active 주문 후보가 0건이면 매핑 실패로 생략한다.
+    - active 주문 후보가 2건 이상이면 output2가 전체 aggregate summary일 수 있으므로
+      connector_order_request / connector_order_event / connector_fill 변경을 금지한다.
+    """
+
+    conditions = [
+        "request_type IN ('BUY', 'SELL')",
+        "request_status IN ('ACCEPTED', 'SUBMITTED', 'PENDING', 'PARTIAL_FILLED')",
+        "requested_at::date = CURRENT_DATE",
+        "broker_order_no IS NOT NULL",
+    ]
+    params = []
+
+    if order_no:
+        conditions.append("broker_order_no = %s::text")
+        params.append(order_no)
+
+    if stock_code:
+        conditions.append("ticker_code = %s::text")
+        params.append(stock_code)
+
+    if branch_code:
+        conditions.append(
+            "(broker_branch_code = %s::text OR broker_branch_code IS NULL)"
+        )
+        params.append(branch_code)
+
+    sql = f"""
+        SELECT
+            id,
+            broker_order_no,
+            broker_branch_code,
+            ticker_code,
+            order_qty,
+            request_type,
+            order_method,
+            order_price,
+            request_status,
+            requested_at
+        FROM connector_order_request
+        WHERE {" AND ".join(conditions)}
+        ORDER BY requested_at DESC, id DESC
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+
+    return rows
+
+
 def _process_summary_fallback(
     account_id: int,
     data: dict,
@@ -491,14 +553,41 @@ def _process_summary_fallback(
 ):
     """상세 주문 목록이 없고 summary만 있는 조회 결과를 단일 주문 event/fill로 보정한다."""
     summary = data.get("output2", {}) or {}
+    detail_orders = data.get("output1", []) or []
 
     tot_ord_qty = _to_int(summary.get("tot_ord_qty", "0"))
     tot_ccld_qty = _to_int(summary.get("tot_ccld_qty", "0"))
     tot_ccld_amt = _to_float(summary.get("tot_ccld_amt", "0"))
     avg_price = _to_float(summary.get("pchs_avg_pric", "0"))
 
+    if detail_orders:
+        print("⚠ summary fallback guard: output1 상세행이 있어 fallback 생략")
+        return
+
     if tot_ord_qty <= 0:
         print("⚠ summary에도 주문수량이 없어 fallback 생략")
+        return
+
+    fallback_candidates = _count_summary_fallback_candidates(
+        stock_code=stock_code,
+        order_no=order_no,
+        branch_code=branch_code,
+    )
+
+    if len(fallback_candidates) != 1:
+        print(
+            "⚠ summary fallback 생략: "
+            f"active_order_candidates={len(fallback_candidates)}, "
+            "output1 empty + output2 summary only 상태에서는 "
+            "후보가 정확히 1건일 때만 event/fill/status 변경 허용"
+        )
+        for row in fallback_candidates[:10]:
+            print(
+                "  - candidate "
+                f"id={row[0]}, broker_order_no={row[1]}, "
+                f"branch={row[2]}, ticker={row[3]}, qty={row[4]}, "
+                f"type={row[5]}, method={row[6]}, status={row[8]}"
+            )
         return
 
     context = _find_latest_order_context(

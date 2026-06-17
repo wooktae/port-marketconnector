@@ -262,13 +262,15 @@ def _require_execute_environment() -> None:
 
 
 def _strategy_run_id(order: Dict[str, Any]) -> Optional[str]:
-    source_daily_run_id = order.get("source_daily_run_id")
-    if source_daily_run_id is not None:
-        return str(source_daily_run_id)
+    """Return only UUID-backed strategy run id.
 
-    execution_plan_id = order.get("execution_plan_id")
-    if execution_plan_id is not None:
-        return str(execution_plan_id)
+    connector.connector_order_request.strategy_run_id is a uuid column.
+    Daily run ids and execution plan ids are numeric identifiers, so they must
+    not be passed as strategy_run_id. They are preserved in payload fields.
+    """
+    source_run_id = order.get("source_run_id")
+    if source_run_id is not None:
+        return str(source_run_id)
 
     return None
 
@@ -292,6 +294,10 @@ def _order_payload(order: Dict[str, Any]) -> Dict[str, Any]:
         "order_qty": order.get("order_qty"),
         "order_method": order.get("order_method"),
         "order_price": order.get("order_price"),
+        "source_run_id": order.get("source_run_id"),
+        "source_daily_run_id": order.get("source_daily_run_id"),
+        "source_daily_signal_id": order.get("source_daily_signal_id"),
+        "source_signal_id": order.get("source_signal_id"),
         "source_position_state_id": order.get("source_position_state_id"),
     }
 
@@ -326,7 +332,9 @@ def _submit_order(order: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "strategy_name": order.get("strategy_name") or "strategy_ai",
         "strategy_version": order.get("strategy_version") or "strategy_execution",
         "strategy_run_id": _strategy_run_id(order),
-        "strategy_signal_id": order.get("source_signal_id"),
+        "strategy_signal_id": (
+            order.get("source_daily_signal_id") or order.get("source_signal_id")
+        ),
         "signal_date": order.get("signal_date"),
         "signal_type": action,
         "signal_score": order.get("signal_score"),
