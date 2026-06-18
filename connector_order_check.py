@@ -5,6 +5,7 @@
 """
 
 import json
+import sys
 import time
 from datetime import datetime
 from typing import Optional
@@ -751,6 +752,156 @@ def _process_summary_fallback(
     )
 
 
+
+def _find_active_order_contexts(limit: Optional[int] = None):
+    """
+    Step 13 기본 실행용 active 주문 목록 조회.
+
+    운영 원칙:
+    - broad 조회를 기본 DB 반영 경로로 사용하지 않는다.
+    - broker_order_no / ticker_code가 있는 active 주문을 1건씩 단건 조회한다.
+    - 각 주문은 fetch_and_save_orders(..., try_broad_search_if_empty=False)로 처리한다.
+    """
+
+    limit_clause = ""
+    params = []
+    if limit and limit > 0:
+        limit_clause = "LIMIT %s"
+        params.append(limit)
+
+    sql = f"""
+        SELECT
+            id,
+            broker_order_no,
+            broker_branch_code,
+            ticker_code,
+            order_qty,
+            request_type,
+            order_method,
+            order_price,
+            request_status,
+            requested_at
+        FROM connector_order_request
+        WHERE request_type IN ('BUY', 'SELL')
+          AND request_status IN (
+                'ACCEPTED',
+                'SUBMITTED',
+                'PENDING',
+                'PARTIAL_FILLED',
+                'PARTIALLY_FILLED'
+          )
+          AND requested_at::date = CURRENT_DATE
+          AND broker_order_no IS NOT NULL
+          AND ticker_code IS NOT NULL
+        ORDER BY requested_at ASC, id ASC
+        {limit_clause}
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+
+    contexts = []
+    for row in rows:
+        contexts.append(
+            {
+                "order_request_id": row[0],
+                "broker_order_no": row[1],
+                "broker_branch_code": row[2],
+                "ticker_code": row[3],
+                "order_qty": row[4],
+                "request_type": row[5],
+                "order_method": row[6],
+                "order_price": row[7],
+                "request_status": row[8],
+                "requested_at": row[9],
+            }
+        )
+
+    return contexts
+
+
+def reconcile_active_orders(
+    start_date: str,
+    end_date: str,
+    limit: Optional[int] = None,
+):
+    """
+    Step 13 기본 모드.
+
+    active 주문을 먼저 조회한 뒤 주문번호/종목코드 기준으로 1건씩 순차 체결조회한다.
+    이 함수가 wrapper의 기본 실행 경로가 되면 ps1은 복잡한 DB loop 없이
+    python connector_order_check.py 만 실행하면 된다.
+    """
+
+    active_orders = _find_active_order_contexts(limit=limit)
+
+    if not active_orders:
+        print("\n✅ Step 13 skip: active connector order 없음")
+        return 0
+
+    print(f"\n📌 Step 13 active 주문 단건 순차 조회 시작: {len(active_orders)}건")
+
+    success_count = 0
+    failure_count = 0
+
+    for idx, order in enumerate(active_orders, start=1):
+        order_request_id = order["order_request_id"]
+        ticker_code = order["ticker_code"]
+        broker_order_no = order["broker_order_no"]
+        broker_branch_code = order["broker_branch_code"]
+
+        print(
+            "\n"
+            + "=" * 80
+            + f"\n🔎 Step 13 per-order check {idx}/{len(active_orders)} "
+            f"id={order_request_id}, code={ticker_code}, "
+            f"order_no={broker_order_no}, branch={broker_branch_code or ''}, "
+            f"qty={order['order_qty']}, status={order['request_status']}"
+            + "\n"
+            + "=" * 80
+        )
+
+        try:
+            result = fetch_and_save_orders(
+                start_date=start_date,
+                end_date=end_date,
+                stock_code=ticker_code,
+                order_no=broker_order_no,
+                branch_code=broker_branch_code,
+                try_broad_search_if_empty=False,
+            )
+            if result is None:
+                failure_count += 1
+                print(
+                    f"❌ Step 13 per-order check 실패: "
+                    f"id={order_request_id}, code={ticker_code}, order_no={broker_order_no}"
+                )
+            else:
+                success_count += 1
+                print(
+                    f"✅ Step 13 per-order check 완료: "
+                    f"id={order_request_id}, code={ticker_code}, order_no={broker_order_no}"
+                )
+        except Exception as e:
+            failure_count += 1
+            print(
+                f"❌ Step 13 per-order check 예외: "
+                f"id={order_request_id}, code={ticker_code}, order_no={broker_order_no}, error={e}"
+            )
+
+    print(
+        "\n📌 Step 13 active 주문 단건 순차 조회 요약: "
+        f"success={success_count}, failed={failure_count}, total={len(active_orders)}"
+    )
+
+    if failure_count > 0:
+        return 1
+
+    return 0
+
+
 def fetch_and_save_orders(
     start_date: str,
     end_date: str,
@@ -905,14 +1056,51 @@ if __name__ == "__main__":
         action="store_true",
         help="direct 조회가 비어도 broad search 재시도하지 않음",
     )
+    parser.add_argument(
+        "--broad",
+        action="store_true",
+        help=(
+            "legacy broad 조회 모드. 지정하지 않으면 기본값은 "
+            "active 주문 단건 순차 조회 또는 명시 주문 direct-only 조회"
+        ),
+    )
+    parser.add_argument(
+        "--active-limit",
+        type=int,
+        default=None,
+        help="기본 active 주문 단건 순차 조회 최대 처리 건수",
+    )
 
     args = parser.parse_args()
 
-    fetch_and_save_orders(
-        start_date=args.start,
-        end_date=args.end,
-        stock_code=args.code,
-        order_no=args.order_no,
-        branch_code=args.branch_code,
-        try_broad_search_if_empty=not args.no_broad,
+    has_direct_filter = bool(args.code or args.order_no or args.branch_code)
+
+    if args.broad:
+        result = fetch_and_save_orders(
+            start_date=args.start,
+            end_date=args.end,
+            stock_code=args.code,
+            order_no=args.order_no,
+            branch_code=args.branch_code,
+            try_broad_search_if_empty=not args.no_broad,
+        )
+        sys.exit(0 if result is not None else 1)
+
+    if has_direct_filter:
+        result = fetch_and_save_orders(
+            start_date=args.start,
+            end_date=args.end,
+            stock_code=args.code,
+            order_no=args.order_no,
+            branch_code=args.branch_code,
+            try_broad_search_if_empty=False,
+        )
+        sys.exit(0 if result is not None else 1)
+
+    sys.exit(
+        reconcile_active_orders(
+            start_date=args.start,
+            end_date=args.end,
+            limit=args.active_limit,
+        )
     )
