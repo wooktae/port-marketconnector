@@ -22,6 +22,8 @@ EXECUTION_MODE = "PAPER_STRATEGY"
 REQUESTED_STATUS = "REQUESTED"
 SUBMITTED_STATUS = "SUBMITTED"
 FAILED_STATUS = "FAILED"
+RETRYABLE_REJECTION_CODE = "40580000"
+RETRYABLE_EXECUTION_STATUSES = ("READY", "FAILED")
 
 REQUIRED_COLUMNS = [
     "id",
@@ -43,6 +45,8 @@ OPTIONAL_COLUMNS = [
     "strategy_name",
     "strategy_version",
     "source_daily_run_id",
+    "source_daily_signal_id",
+    "source_daily_position_decision_id",
     "source_signal_id",
     "signal_date",
     "signal_score",
@@ -169,6 +173,191 @@ def fetch_requested_strategy_orders(
             cur.execute(sql, tuple(params))
             return [dict(row) for row in cur.fetchall()]
 
+
+
+def normalize_retryable_rejected_orders(
+    *,
+    execute: bool,
+    action: Optional[str],
+    plan_id: Optional[int],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Recover retryable rejected execution orders before Step 12 submission.
+
+    Step 12 submits only REQUESTED orders whose connector_order_request_id is
+    NULL. A retryable rejected request, especially KIS paper market-closed
+    40580000, can otherwise leave an execution order stuck with an old rejected
+    connector_order_request_id.
+
+    Safety gates:
+    - PAPER_STRATEGY only
+    - BUY/SELL only
+    - execution_status in READY/FAILED
+    - connector_order_request is REJECTED with rejection_code 40580000
+    - broker_order_no is NULL
+    - no connector_fill exists for the old request
+
+    In dry-run mode this only prints candidates. In execute mode it detaches the
+    old rejected request, sets the execution order back to REQUESTED, and records
+    the recovery in result_payload.retry_normalizer.
+    """
+
+    order_table_ref, _ = _table_info("strategy_execution_order")
+    request_table_ref, _ = _table_info("connector_order_request")
+    fill_table_ref, _ = _table_info("connector_fill")
+
+    conditions = [
+        "eo.execution_mode = %s",
+        "eo.action_type IN ('BUY', 'SELL')",
+        "eo.execution_status IN ('READY', 'FAILED')",
+        "eo.connector_order_request_id IS NOT NULL",
+        "COALESCE(eo.order_qty, 0) > 0",
+        "cor.request_status = 'REJECTED'",
+        "cor.rejection_code = %s",
+        "cor.broker_order_no IS NULL",
+        f"NOT EXISTS (SELECT 1 FROM {fill_table_ref} cf WHERE cf.order_request_id = cor.id)",
+    ]
+    params: List[Any] = [EXECUTION_MODE, RETRYABLE_REJECTION_CODE]
+
+    if action:
+        conditions.append("eo.action_type = %s")
+        params.append(action)
+
+    if plan_id is not None:
+        conditions.append("eo.execution_plan_id = %s")
+        params.append(plan_id)
+
+    where_clause = " AND ".join(conditions)
+
+    select_sql = f"""
+        SELECT
+            eo.id AS execution_order_id,
+            eo.execution_plan_id,
+            eo.execution_mode,
+            eo.source_type,
+            eo.action_type,
+            eo.execution_status,
+            eo.ticker_code,
+            eo.stock_name,
+            eo.order_qty,
+            eo.order_method,
+            eo.order_price,
+            eo.connector_order_request_id,
+            cor.id AS rejected_order_request_id,
+            cor.request_status,
+            cor.rejection_code,
+            cor.rejection_message,
+            cor.broker_order_no,
+            cor.broker_branch_code,
+            cor.requested_at
+        FROM {order_table_ref} eo
+        JOIN {request_table_ref} cor
+          ON cor.id = eo.connector_order_request_id
+        WHERE {where_clause}
+        ORDER BY
+            CASE
+                WHEN eo.action_type = 'SELL' THEN 0
+                WHEN eo.action_type = 'BUY' THEN 1
+                ELSE 2
+            END,
+            eo.id ASC
+        LIMIT %s
+    """
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(select_sql, tuple(params + [limit]))
+            candidates = [dict(row) for row in cur.fetchall()]
+
+    if not candidates:
+        print("[RETRY_NORMALIZER] retryable rejected order 없음")
+        return []
+
+    mode = "EXECUTE" if execute else "DRY_RUN"
+    print(f"[RETRY_NORMALIZER:{mode}] candidate_count={len(candidates)}")
+    for row in candidates:
+        print(
+            "[RETRY_CANDIDATE] "
+            f"execution_order_id={row['execution_order_id']}, "
+            f"old_request_id={row['rejected_order_request_id']}, "
+            f"action={row['action_type']}, "
+            f"ticker={row['ticker_code']}, "
+            f"qty={row['order_qty']}, "
+            f"status={row['execution_status']}, "
+            f"rejection_code={row['rejection_code']}"
+        )
+
+    if not execute:
+        return candidates
+
+    update_sql = f"""
+        WITH retryable AS (
+            SELECT
+                eo.id AS execution_order_id,
+                eo.execution_status AS old_execution_status,
+                eo.connector_order_request_id AS old_connector_order_request_id,
+                cor.rejection_code,
+                cor.rejection_message
+            FROM {order_table_ref} eo
+            JOIN {request_table_ref} cor
+              ON cor.id = eo.connector_order_request_id
+            WHERE {where_clause}
+            ORDER BY
+                CASE
+                    WHEN eo.action_type = 'SELL' THEN 0
+                    WHEN eo.action_type = 'BUY' THEN 1
+                    ELSE 2
+                END,
+                eo.id ASC
+            LIMIT %s
+        )
+        UPDATE {order_table_ref} eo
+           SET execution_status = 'REQUESTED',
+               connector_order_request_id = NULL,
+               result_payload =
+                   COALESCE(eo.result_payload, '{{}}'::jsonb)
+                   || jsonb_build_object(
+                       'retry_normalizer',
+                       jsonb_build_object(
+                           'normalized_at', now(),
+                           'normalized_reason', 'RETRY_REJECTED_MARKET_CLOSED_40580000',
+                           'old_execution_status', r.old_execution_status,
+                           'old_connector_order_request_id', r.old_connector_order_request_id,
+                           'old_rejection_code', r.rejection_code,
+                           'old_rejection_message', r.rejection_message
+                       )
+                   ),
+               updated_at = now()
+          FROM retryable r
+         WHERE eo.id = r.execution_order_id
+        RETURNING
+            eo.id AS execution_order_id,
+            eo.execution_status,
+            eo.connector_order_request_id,
+            r.old_connector_order_request_id,
+            r.old_execution_status,
+            r.rejection_code
+    """
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(update_sql, tuple(params + [limit]))
+            recovered = [dict(row) for row in cur.fetchall()]
+        conn.commit()
+
+    print(f"[RETRY_NORMALIZER:UPDATED] recovered_count={len(recovered)}")
+    for row in recovered:
+        print(
+            "[RETRY_RECOVERED] "
+            f"execution_order_id={row['execution_order_id']}, "
+            f"old_status={row['old_execution_status']}, "
+            f"new_status={row['execution_status']}, "
+            f"old_request_id={row['old_connector_order_request_id']}, "
+            f"new_request_id={row['connector_order_request_id']}, "
+            f"rejection_code={row['rejection_code']}"
+        )
+
+    return recovered
 
 def mark_strategy_execution_order_submitted(
     execution_order_id: int,
@@ -366,6 +555,13 @@ def run(args: argparse.Namespace) -> int:
     action = args.action.upper() if args.action else None
     if args.execute:
         _require_execute_environment()
+
+    normalize_retryable_rejected_orders(
+        execute=args.execute,
+        action=action,
+        plan_id=args.plan_id,
+        limit=args.limit,
+    )
 
     orders = fetch_requested_strategy_orders(
         limit=args.limit,
