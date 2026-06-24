@@ -8,6 +8,7 @@ Use --execute only in the guarded paper/aws-paper runtime.
 import argparse
 import json
 import os
+import time
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -22,8 +23,12 @@ EXECUTION_MODE = "PAPER_STRATEGY"
 REQUESTED_STATUS = "REQUESTED"
 SUBMITTED_STATUS = "SUBMITTED"
 FAILED_STATUS = "FAILED"
-RETRYABLE_REJECTION_CODE = "40580000"
+RETRYABLE_REJECTION_CODES = ("40580000", "EGW00201")
+RATE_LIMIT_REJECTION_CODE = "EGW00201"
 RETRYABLE_EXECUTION_STATUSES = ("READY", "FAILED")
+DEFAULT_ORDER_SLEEP_SECONDS = float(os.environ.get("STEP12_ORDER_SLEEP_SECONDS", "2.0"))
+DEFAULT_RATE_LIMIT_RETRY_COUNT = int(os.environ.get("STEP12_RATE_LIMIT_RETRY_COUNT", "2"))
+DEFAULT_RATE_LIMIT_BACKOFF_SECONDS = float(os.environ.get("STEP12_RATE_LIMIT_BACKOFF_SECONDS", "3.0"))
 
 REQUIRED_COLUMNS = [
     "id",
@@ -185,15 +190,20 @@ def normalize_retryable_rejected_orders(
     """Recover retryable rejected execution orders before Step 12 submission.
 
     Step 12 submits only REQUESTED orders whose connector_order_request_id is
-    NULL. A retryable rejected request, especially KIS paper market-closed
-    40580000, can otherwise leave an execution order stuck with an old rejected
-    connector_order_request_id.
+    NULL. Retryable rejected requests can otherwise leave an execution order
+    stuck with an old rejected connector_order_request_id.
+
+    Retryable rejection codes:
+    - 40580000: KIS paper market closed. Safe to retry during a later market
+      session.
+    - EGW00201: KIS gateway rate limit. Safe to retry only with throttling /
+      backoff, so Step 12 also sleeps between orders and retries this code.
 
     Safety gates:
     - PAPER_STRATEGY only
     - BUY/SELL only
     - execution_status in READY/FAILED
-    - connector_order_request is REJECTED with rejection_code 40580000
+    - connector_order_request is REJECTED with retryable rejection_code
     - broker_order_no is NULL
     - no connector_fill exists for the old request
 
@@ -213,11 +223,11 @@ def normalize_retryable_rejected_orders(
         "eo.connector_order_request_id IS NOT NULL",
         "COALESCE(eo.order_qty, 0) > 0",
         "cor.request_status = 'REJECTED'",
-        "cor.rejection_code = %s",
+        "cor.rejection_code IN (" + ", ".join(["%s"] * len(RETRYABLE_REJECTION_CODES)) + ")",
         "cor.broker_order_no IS NULL",
         f"NOT EXISTS (SELECT 1 FROM {fill_table_ref} cf WHERE cf.order_request_id = cor.id)",
     ]
-    params: List[Any] = [EXECUTION_MODE, RETRYABLE_REJECTION_CODE]
+    params: List[Any] = [EXECUTION_MODE, *RETRYABLE_REJECTION_CODES]
 
     if action:
         conditions.append("eo.action_type = %s")
@@ -320,7 +330,7 @@ def normalize_retryable_rejected_orders(
                        'retry_normalizer',
                        jsonb_build_object(
                            'normalized_at', now(),
-                           'normalized_reason', 'RETRY_REJECTED_MARKET_CLOSED_40580000',
+                           'normalized_reason', 'RETRY_REJECTED_ORDER_REQUEST',
                            'old_execution_status', r.old_execution_status,
                            'old_connector_order_request_id', r.old_connector_order_request_id,
                            'old_rejection_code', r.rejection_code,
@@ -543,6 +553,98 @@ def _submit_order(order: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     raise ValueError(f"unsupported action_type: {action}")
 
 
+def _response_code(result: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not result:
+        return None
+
+    response = result.get("response") or {}
+    for key in ("msg_cd", "rt_cd", "error_code", "code"):
+        value = response.get(key)
+        if value:
+            return str(value)
+
+    for key in ("rejection_code", "msg_cd", "error_code", "code"):
+        value = result.get(key)
+        if value:
+            return str(value)
+
+    return None
+
+
+def _is_rate_limit_result(result: Optional[Dict[str, Any]]) -> bool:
+    if not result:
+        return False
+
+    if _response_code(result) == RATE_LIMIT_REJECTION_CODE:
+        return True
+
+    response = result.get("response") or {}
+    message_values = [
+        response.get("msg1"),
+        response.get("message"),
+        result.get("rejection_message"),
+        result.get("message"),
+    ]
+    return any("초당" in str(value) and "초과" in str(value) for value in message_values if value)
+
+
+def _sleep_if_needed(seconds: float, reason: str) -> None:
+    if seconds <= 0:
+        return
+    print(f"[THROTTLE] reason={reason}, sleep_seconds={seconds:.2f}")
+    time.sleep(seconds)
+
+
+def _submit_order_with_rate_limit_retry(
+    order: Dict[str, Any],
+    *,
+    retry_count: int,
+    backoff_seconds: float,
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    attempts: List[Dict[str, Any]] = []
+    max_attempts = max(1, retry_count + 1)
+
+    for attempt_no in range(1, max_attempts + 1):
+        result = _submit_order(order)
+        response_code = _response_code(result)
+        rate_limited = _is_rate_limit_result(result)
+        connector_order_request_id = result.get("order_request_id") if result else None
+
+        attempts.append(
+            {
+                "attempt_no": attempt_no,
+                "connector_order_request_id": connector_order_request_id,
+                "response_code": response_code,
+                "rate_limited": rate_limited,
+                "successful": _is_successful_result(result),
+            }
+        )
+
+        if _is_successful_result(result):
+            return result, attempts
+
+        if not rate_limited:
+            return result, attempts
+
+        if attempt_no >= max_attempts:
+            print(
+                "[RATE_LIMIT_RETRY_EXHAUSTED] "
+                f"execution_order_id={order.get('id')}, attempts={attempt_no}, "
+                f"response_code={response_code}"
+            )
+            return result, attempts
+
+        sleep_seconds = backoff_seconds * attempt_no
+        print(
+            "[RATE_LIMIT_RETRY] "
+            f"execution_order_id={order.get('id')}, attempt={attempt_no}, "
+            f"response_code={response_code}, next_sleep_seconds={sleep_seconds:.2f}"
+        )
+        _sleep_if_needed(sleep_seconds, "KIS_RATE_LIMIT_BACKOFF")
+
+    return None, attempts
+
+
 def _print_order(prefix: str, order: Dict[str, Any]) -> None:
     print(
         f"{prefix} id={order.get('id')}, action={order.get('action_type')}, "
@@ -581,13 +683,20 @@ def run(args: argparse.Namespace) -> int:
             _print_order("[ORDER]", order)
         return 0
 
-    for order in orders:
+    for index, order in enumerate(orders):
+        if index > 0:
+            _sleep_if_needed(args.order_sleep_seconds, "BETWEEN_ORDERS")
+
         _print_order("[ORDER]", order)
         execution_order_id = order["id"]
 
         try:
             _validate_order_for_execute(order)
-            result = _submit_order(order)
+            result, submit_attempts = _submit_order_with_rate_limit_retry(
+                order,
+                retry_count=args.rate_limit_retry_count,
+                backoff_seconds=args.rate_limit_backoff_seconds,
+            )
             connector_order_request_id = (
                 result.get("order_request_id") if result else None
             )
@@ -595,6 +704,7 @@ def run(args: argparse.Namespace) -> int:
             result_payload = {
                 **_order_payload(order),
                 "result": result,
+                "submit_attempts": submit_attempts,
             }
 
             if _is_successful_result(result):
@@ -662,6 +772,33 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"조회 개수 제한. 기본값 {DEFAULT_LIMIT}",
     )
     parser.add_argument(
+        "--order-sleep-seconds",
+        type=float,
+        default=DEFAULT_ORDER_SLEEP_SECONDS,
+        help=(
+            "주문 1건 처리 후 다음 주문 전 대기 초. "
+            f"기본값 {DEFAULT_ORDER_SLEEP_SECONDS}"
+        ),
+    )
+    parser.add_argument(
+        "--rate-limit-retry-count",
+        type=int,
+        default=DEFAULT_RATE_LIMIT_RETRY_COUNT,
+        help=(
+            "EGW00201 rate limit 발생 시 동일 주문 재시도 횟수. "
+            f"기본값 {DEFAULT_RATE_LIMIT_RETRY_COUNT}"
+        ),
+    )
+    parser.add_argument(
+        "--rate-limit-backoff-seconds",
+        type=float,
+        default=DEFAULT_RATE_LIMIT_BACKOFF_SECONDS,
+        help=(
+            "EGW00201 재시도 backoff 기준 초. n번째 재시도 전 n배 대기. "
+            f"기본값 {DEFAULT_RATE_LIMIT_BACKOFF_SECONDS}"
+        ),
+    )
+    parser.add_argument(
         "--action",
         choices=["BUY", "SELL"],
         default=None,
@@ -681,6 +818,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.limit <= 0:
         parser.error("--limit must be positive")
+    if args.order_sleep_seconds < 0:
+        parser.error("--order-sleep-seconds must be non-negative")
+    if args.rate_limit_retry_count < 0:
+        parser.error("--rate-limit-retry-count must be non-negative")
+    if args.rate_limit_backoff_seconds < 0:
+        parser.error("--rate-limit-backoff-seconds must be non-negative")
 
     try:
         return run(args)
