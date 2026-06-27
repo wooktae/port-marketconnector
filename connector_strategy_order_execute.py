@@ -53,6 +53,7 @@ OPTIONAL_COLUMNS = [
     "source_daily_signal_id",
     "source_daily_position_decision_id",
     "source_signal_id",
+    "signal_type",
     "signal_date",
     "signal_score",
     "target_weight",
@@ -136,8 +137,11 @@ def fetch_requested_strategy_orders(
     limit: int = DEFAULT_LIMIT,
     action: Optional[str] = None,
     plan_id: Optional[int] = None,
+    signal_type: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     table_ref, columns = _table_info("strategy_execution_order")
+    if signal_type and "signal_type" not in columns:
+        raise RuntimeError("strategy_execution_order signal_type 컬럼 없음")
     select_exprs, _ = _select_exprs(columns)
 
     conditions = [
@@ -156,6 +160,10 @@ def fetch_requested_strategy_orders(
     if plan_id is not None:
         conditions.append("execution_plan_id = %s")
         params.append(plan_id)
+
+    if signal_type:
+        conditions.append("signal_type = %s")
+        params.append(signal_type)
 
     params.append(limit)
     sql = f"""
@@ -186,6 +194,7 @@ def normalize_retryable_rejected_orders(
     action: Optional[str],
     plan_id: Optional[int],
     limit: int,
+    signal_type: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Recover retryable rejected execution orders before Step 12 submission.
 
@@ -212,7 +221,9 @@ def normalize_retryable_rejected_orders(
     the recovery in result_payload.retry_normalizer.
     """
 
-    order_table_ref, _ = _table_info("strategy_execution_order")
+    order_table_ref, order_columns = _table_info("strategy_execution_order")
+    if signal_type and "signal_type" not in order_columns:
+        raise RuntimeError("strategy_execution_order signal_type 컬럼 없음")
     request_table_ref, _ = _table_info("connector_order_request")
     fill_table_ref, _ = _table_info("connector_fill")
 
@@ -236,6 +247,10 @@ def normalize_retryable_rejected_orders(
     if plan_id is not None:
         conditions.append("eo.execution_plan_id = %s")
         params.append(plan_id)
+
+    if signal_type:
+        conditions.append("eo.signal_type = %s")
+        params.append(signal_type)
 
     where_clause = " AND ".join(conditions)
 
@@ -488,6 +503,7 @@ def _order_payload(order: Dict[str, Any]) -> Dict[str, Any]:
         "execution_mode": order.get("execution_mode"),
         "source_type": order.get("source_type"),
         "action_type": order.get("action_type"),
+        "signal_type": order.get("signal_type"),
         "ticker_code": order.get("ticker_code"),
         "stock_name": order.get("stock_name"),
         "order_qty": order.get("order_qty"),
@@ -535,7 +551,7 @@ def _submit_order(order: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             order.get("source_daily_signal_id") or order.get("source_signal_id")
         ),
         "signal_date": order.get("signal_date"),
-        "signal_type": action,
+        "signal_type": order.get("signal_type") or action,
         "signal_score": order.get("signal_score"),
         "signal_position_size": _signal_position_size(order),
     }
@@ -648,6 +664,7 @@ def _submit_order_with_rate_limit_retry(
 def _print_order(prefix: str, order: Dict[str, Any]) -> None:
     print(
         f"{prefix} id={order.get('id')}, action={order.get('action_type')}, "
+        f"signal_type={order.get('signal_type')}, "
         f"ticker={order.get('ticker_code')}, qty={order.get('order_qty')}, "
         f"mode={order.get('execution_mode')}"
     )
@@ -655,6 +672,17 @@ def _print_order(prefix: str, order: Dict[str, Any]) -> None:
 
 def run(args: argparse.Namespace) -> int:
     action = args.action.upper() if args.action else None
+    signal_type = args.signal_type.upper() if args.signal_type else None
+
+    if args.intraday_stop_only:
+        if action and action != "SELL":
+            raise RuntimeError("--intraday-stop-only requires --action SELL or no --action")
+        if signal_type and signal_type != "INTRADAY_STOP_SELL":
+            raise RuntimeError("--intraday-stop-only requires --signal-type INTRADAY_STOP_SELL or no --signal-type")
+        action = "SELL"
+        signal_type = "INTRADAY_STOP_SELL"
+        print("[INTRADAY_STOP_ONLY] action=SELL, signal_type=INTRADAY_STOP_SELL")
+
     if args.execute:
         _require_execute_environment()
 
@@ -663,12 +691,14 @@ def run(args: argparse.Namespace) -> int:
         action=action,
         plan_id=args.plan_id,
         limit=args.limit,
+        signal_type=signal_type,
     )
 
     orders = fetch_requested_strategy_orders(
         limit=args.limit,
         action=action,
         plan_id=args.plan_id,
+        signal_type=signal_type,
     )
 
     if not orders:
@@ -810,6 +840,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="특정 execution_plan_id만 처리",
     )
+    parser.add_argument(
+        "--signal-type",
+        default=None,
+        help="특정 signal_type만 처리. 예: INTRADAY_STOP_SELL",
+    )
+    parser.add_argument(
+        "--intraday-stop-only",
+        action="store_true",
+        help="장중 손절 주문만 처리. action=SELL, signal_type=INTRADAY_STOP_SELL을 강제",
+    )
     return parser
 
 
@@ -824,6 +864,12 @@ def main() -> int:
         parser.error("--rate-limit-retry-count must be non-negative")
     if args.rate_limit_backoff_seconds < 0:
         parser.error("--rate-limit-backoff-seconds must be non-negative")
+    if args.signal_type:
+        args.signal_type = args.signal_type.upper()
+    if args.intraday_stop_only and args.action and args.action != "SELL":
+        parser.error("--intraday-stop-only requires --action SELL or no --action")
+    if args.intraday_stop_only and args.signal_type and args.signal_type != "INTRADAY_STOP_SELL":
+        parser.error("--intraday-stop-only requires --signal-type INTRADAY_STOP_SELL or no --signal-type")
 
     try:
         return run(args)
