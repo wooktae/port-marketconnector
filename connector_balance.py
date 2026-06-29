@@ -192,7 +192,8 @@ def fetch_and_save_balance():
         "source_version": SOURCE_VERSION,
     }
 
-    save_balance_summary_legacy(legacy_balance_record)
+    # AWS paper: legacy balance_summary write disabled
+    # save_balance_summary_legacy(legacy_balance_record)
     upsert_connector_balance_snapshot(connector_balance_record)
     print("✅ balance_summary + connector_balance_snapshot 저장 완료")
 
