@@ -11,6 +11,8 @@ Safety-first initial version:
 import argparse
 import json
 import os
+import subprocess
+import tempfile
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,7 +22,7 @@ from psycopg.rows import dict_row
 from connector_db import get_conn
 
 
-SOURCE_VERSION = "connector-intraday-position-evaluate-1.1.0"
+SOURCE_VERSION = "connector-intraday-position-evaluate-1.1.1-slack-notify"
 DEFAULT_ENVIRONMENT = os.environ.get("PORTFOLIO_ENV", "paper")
 DEFAULT_HARD_STOP_RATE = Decimal(os.environ.get("INTRADAY_HARD_STOP_RATE", "-0.10"))
 DEFAULT_MAX_SNAPSHOT_AGE_MINUTES = int(os.environ.get("INTRADAY_MAX_SNAPSHOT_AGE_MINUTES", "30"))
@@ -469,6 +471,97 @@ def create_intraday_stop_order(record: Dict[str, Any], check_id: int) -> int:
     return int(row[0])
 
 
+
+def _percent_for_slack(value: Any) -> Optional[float]:
+    """Convert stored rate ratio such as -0.042 into Slack display percent -4.2."""
+    if value is None:
+        return None
+    try:
+        dec = Decimal(str(value))
+        return float((dec * Decimal("100")).quantize(Decimal("0.01")))
+    except Exception:
+        return None
+
+
+def notify_intraday_stop_slack(
+    record: Dict[str, Any],
+    *,
+    check_id: int,
+    created_order_id: int,
+    slack_function_name: str,
+    slack_region: str,
+) -> bool:
+    """Notify Slack after INTRADAY_STOP_SELL READY execution order is created.
+
+    Safety:
+    - This function only invokes the Slack notifier Lambda.
+    - It never submits broker orders.
+    - It is called only after READY order creation and check attachment succeed.
+    """
+    order_qty = min(
+        int(record.get("remaining_qty") or 0),
+        int(record.get("sellable_qty") or 0),
+    )
+
+    payload = {
+        "eventType": "INTRADAY_STOP_LOSS",
+        "stockName": record.get("stock_name") or record.get("ticker_code") or "-",
+        "quantity": order_qty,
+        "condition": record.get("stop_reason") or "INTRADAY_STOP_SELL READY",
+        "evalProfitRate": _percent_for_slack(record.get("pnl_rate")),
+        "runDate": str(record.get("check_date") or date.today()),
+        "source": "connector_intraday_position_evaluate",
+        "tickerCode": record.get("ticker_code"),
+        "executionOrderId": created_order_id,
+        "checkId": check_id,
+    }
+
+    with tempfile.TemporaryDirectory(prefix="intraday_stop_slack_") as tmp_dir:
+        payload_path = os.path.join(tmp_dir, "payload.json")
+        response_path = os.path.join(tmp_dir, "response.json")
+
+        with open(payload_path, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, default=_json_default)
+
+        cmd = [
+            "aws",
+            "lambda",
+            "invoke",
+            "--region",
+            slack_region,
+            "--function-name",
+            slack_function_name,
+            "--payload",
+            f"fileb://{payload_path}",
+            response_path,
+        ]
+
+        result = subprocess.run(
+            cmd,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+        if result.returncode != 0:
+            print(
+                "[WARN] INTRADAY_STOP_SLACK_NOTIFY_FAILED "
+                f"returncode={result.returncode}, "
+                f"stderr={result.stderr[:500]}"
+            )
+            return False
+
+        print(
+            "[SLACK_NOTIFIED] "
+            f"eventType=INTRADAY_STOP_LOSS, "
+            f"ticker_code={record.get('ticker_code')}, "
+            f"stock_name={record.get('stock_name')}, "
+            f"check_id={check_id}, "
+            f"execution_order_id={created_order_id}"
+        )
+        return True
+
+
 def attach_created_execution_order(check_id: int, execution_order_id: int) -> None:
     sql = """
         update execution.strategy_intraday_position_check
@@ -561,6 +654,9 @@ def run(args: argparse.Namespace) -> int:
     print(f"[INFO] source_version={SOURCE_VERSION}")
     print(f"[INFO] account_no={account_no or 'ALL'}")
     print(f"[INFO] create_order={args.create_order}")
+    print(f"[INFO] notify_slack={args.notify_slack}")
+    print(f"[INFO] slack_function_name={args.slack_function_name if args.notify_slack else 'DISABLED'}")
+    print(f"[INFO] slack_region={args.slack_region if args.notify_slack else 'DISABLED'}")
     print(f"[INFO] hard_stop_rate={args.hard_stop_rate}")
     print(f"[INFO] max_snapshot_age_minutes={args.max_snapshot_age_minutes}")
 
@@ -628,6 +724,16 @@ def run(args: argparse.Namespace) -> int:
             if args.create_order and evaluation["should_stop"]:
                 created_order_id = create_intraday_stop_order(evaluation, check_id)
                 attach_created_execution_order(check_id, created_order_id)
+
+                if args.notify_slack:
+                    notify_intraday_stop_slack(
+                        evaluation,
+                        check_id=check_id,
+                        created_order_id=created_order_id,
+                        slack_function_name=args.slack_function_name,
+                        slack_region=args.slack_region,
+                    )
+
                 print(
                     "[CREATED_ORDER] "
                     f"execution_order_id={created_order_id}, "
@@ -672,6 +778,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--account-no", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--create-order", action="store_true")
+    parser.add_argument("--notify-slack", action="store_true")
+    parser.add_argument("--slack-function-name", default="portfolio-event-notifier")
+    parser.add_argument("--slack-region", default="ap-northeast-2")
     parser.add_argument("--hard-stop-rate", default=str(DEFAULT_HARD_STOP_RATE))
     parser.add_argument("--max-snapshot-age-minutes", type=int, default=DEFAULT_MAX_SNAPSHOT_AGE_MINUTES)
     return parser
