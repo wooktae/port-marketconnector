@@ -1,84 +1,164 @@
 # CHANGELOG
 
-## 2026-07-01
+port-marketconnector 코드와 문서의 주요 변경 이력을 기록한다.
+
+## 작성 원칙
+
+| 항목 | 값 |
+| --- | --- |
+| 기록 범위 | Connector 코드 · Flask API · 스크립트 · 설정 · 테스트 · 문서 |
+| 제외 범위 | 다른 MS 내부 구현 · orchestration 전체 정의 · 일회성 운영 로그 |
+| 정렬 | 최신 날짜를 상단에 추가 |
+| 분류 | Added · Changed · Fixed · Removed · Security |
+| 실행 기록 | 실제 수행한 검증만 기록 |
+| 민감정보 | token · 계좌 · 주문번호 · secret · ARN · endpoint 원문 금지 |
+
+## 2026-07-22 — MarketConnector 문서 기준 재정비
+
+### Changed
+
+| 항목 | 값 |
+| --- | --- |
+| `AGENTS.md` | MarketConnector 전용 작업 규칙으로 전면 재작성 |
+| 최우선 규칙 | 신규 독립 표 2컬럼 · 국소 수정 · 긴 셀 금지 |
+| 실행 위험 | token · KIS API · 주문 · DB 쓰기 기준 강화 |
+| 주문 안전 | Daily Step 12와 Intraday 매도 approval gate 명확화 |
+| Flask 기준 | 실행 API와 View API 책임 분리 |
+| DB 기준 | `connector` · `execution` schema와 transaction 주의사항 정리 |
+| 운영 기준 | EC2 · SSM RunCommand · Scheduler 책임 정리 |
+| 테스트 기준 | 외부 API · token · DB mock 우선 |
+| `README.md` | 현재 상태 · 책임 경계 · 위험 경로 중심으로 전면 재구성 |
+| `docs/source-file-catalog.md` | 5열 장문 구조를 2열 중심으로 재구성 |
+| 문서 체계 | README · CHANGELOG · source catalog 중심으로 단순화 |
+
+### Security
+
+| 항목 | 결과 |
+| --- | --- |
+| Python 코드 변경 | 없음 |
+| Flask · KIS · broker 실행 | 0건 |
+| Token 발급 · 갱신 · 파일 접근 | 0건 |
+| DB · AWS · Slack 실행 | 0건 |
+| Git write 명령 | 0건 |
+| 민감정보 원문 신규 기록 | 0건 |
+
+## 2026-07-01 — 전략 주문과 Intraday 운영 문서화
 
 ### Added
 
-- README에 신규 entrypoint 3종(`connector_strategy_order_execute.py`, `connector_intraday_snapshot_refresh.py`, `connector_intraday_position_evaluate.py`) 전용 섹션을 추가했다.
-- README에 EC2 + SSM RunCommand 운영 구조 섹션을 추가했다. IAM Role `portfolio-paper-marketconnector-ec2-role`, inline policy `portfolio-paper-marketconnector-event-notifier-invoke`, EC2 lifecycle Scheduler `portfolio-paper-ec2-start-0750-kst`, `portfolio-paper-marketconnector-stop-1550-kst`, 장중 10분 주기 Scheduler `portfolio-paper-intraday-snapshot-evaluate-10min-kst`를 서술했다.
-- README에 장중 stop-loss 흐름과 승인 gate 연계를 서술했다. `strategy_execution_order` READY 생성 및 `portfolio-event-notifier` Lambda로의 `INTRADAY_STOP_LOSS` Slack 통지까지는 자동으로 진행되고, broker 주문 제출은 `portfolio-paper-intraday-stop-sell-approval` Step Functions 승인 후에 이어진다는 점을 명시했다.
-- README에 Step 12 KIS paper 주문 제출이 `portfolio-paper-daily-step12-17-approval` 승인 gate를 전제로 한다는 점을 명시했다.
-- README 실행 위험 목록에 신규 entrypoint 3종을 추가했다.
-- `docs/worklog/2026-07-01.md` 작업 일지를 추가했다.
+| 항목 | 값 |
+| --- | --- |
+| 전략 주문 entrypoint | `connector_strategy_order_execute.py` |
+| Intraday Snapshot | `connector_intraday_snapshot_refresh.py` |
+| Intraday 판단 | `connector_intraday_position_evaluate.py` |
+| 운영 구조 | EC2 · SSM RunCommand · Scheduler |
+| Daily approval | `portfolio-paper-daily-step12-17-approval` |
+| Intraday approval | `portfolio-paper-intraday-stop-sell-approval` |
+| Slack 위임 | `portfolio-event-notifier` Lambda |
+| Worklog | `docs/worklog/2026-07-01.md` |
 
 ### Changed
 
-- README 파일 구조 요약에 신규 entrypoint 3종과 `scripts/run_connector_balance_daily.sh` 항목을 반영했다.
-- 주문 및 체결 동기화 섹션에 `connector_order_check.py`의 direct/summary fallback 우선 처리 취지를 짧게 병기했다.
+| 항목 | 값 |
+| --- | --- |
+| README 파일 구조 | 신규 entrypoint 3종과 Daily balance wrapper 반영 |
+| 장중 흐름 | Snapshot Refresh → Position Evaluate 순서 문서화 |
+| hard stop | READY 매도 후보 생성과 실제 broker 제출 책임 분리 |
+| 주문 동기화 | direct · summary fallback 우선 의미 설명 |
+| 실행 위험 | 신규 entrypoint 3종 추가 |
 
-### Notes
+### Security
 
-- 기능 변경 없음. 이번 변경은 md 문서에 한정된 최신화 작업이다.
-- Flask app 실행, KIS/브로커 API 호출, token 발급/갱신, 잔고/보유/시세/주문/체결 조회, 주문 제출/취소/정정, DB DDL/DML, AWS API 호출, SSM RunCommand 발행, Slack webhook 호출은 실행하지 않았다.
-- 다른 마이크로서비스(port-view, StrategyExecution, StrategyDecision, StrategyResearch, Crawler, Preprocessor) 내부 상세, Step Functions state machine 전체 step, EventBridge Scheduler 전체 라인업, Lambda 내부 구현, command id, 실행 시간, 일회성 검증 로그는 반영 범위에서 제외했다.
-- IAM Role ARN, Lambda ARN, secret ARN, account-id, KIS app key/secret, token 값, 계좌번호 전체, broker order number 전체, DB password, Slack webhook URL, RDS endpoint hostname은 문서에 기록하지 않았다.
+| 항목 | 결과 |
+| --- | --- |
+| 기능 변경 | 없음 |
+| Connector · KIS · 주문 실행 | 0건 |
+| SSM · Lambda · Slack 실행 | 0건 |
+| 민감정보 원문 신규 기록 | 0건 |
 
-## 2026-05-28
+## 2026-05-28 — 소스 카탈로그와 설명 주석
 
 ### Added
 
-- `docs/source-file-catalog.md`를 추가해 Python 소스와 문서 파일의 역할, 주요 책임, 운영 주의사항을 한글로 정리했다.
-- 주요 Python connector 파일에 module docstring을 추가했다.
-- 잔고/시세/주문/체결/View 조립 등 운영상 중요한 함수에 짧은 function docstring을 추가했다.
-- `docs/worklog/2026-05-28.md` 작업 일지를 추가했다.
+| 항목 | 값 |
+| --- | --- |
+| `docs/source-file-catalog.md` | 주요 Python 파일의 역할과 운영 위험 정리 |
+| Module docstring | 주요 Connector 파일 설명 |
+| Function docstring | 잔고 · 시세 · 주문 · 체결 · View 조립 함수 설명 |
+| Worklog | `docs/worklog/2026-05-28.md` |
 
 ### Changed
 
-- README에 파일 카탈로그와 설명 주석 정리 산출물을 반영했다.
-- 미커밋 상태였던 `connector_order_check.py` 변경의 의미를 문서화했다.
-  - direct 조회에서 `output1`이 비어도 `output2` summary가 있으면 broad search보다 direct fallback을 먼저 처리해 broad summary가 특정 주문 event/fill에 섞일 위험을 줄이는 변경이다.
+| 항목 | 값 |
+| --- | --- |
+| README | 소스 카탈로그와 주석 정리 결과 반영 |
+| `connector_order_check.py` | direct fallback 우선 처리 의미 문서화 |
 
-### Notes
+### Fixed
 
-- 기능 변경 없음. 이번 작업의 신규 변경은 문서와 설명 주석 정리다.
-- 실제 Flask app 실행, KIS/브로커 API 호출, token 발급/갱신, 주문/잔고/시세/체결 조회, DB DDL/DML은 실행하지 않았다.
-- 민감정보 값은 문서에 기록하지 않았다.
+| 문제 | 해결 |
+| --- | --- |
+| broad summary 오귀속 위험 | direct `output2` summary를 broad search보다 우선 처리 |
 
-## 2026-05-27
+### Security
+
+| 항목 | 결과 |
+| --- | --- |
+| 기능 실행 | 0건 |
+| DB · KIS · broker 호출 | 0건 |
+| 민감정보 원문 신규 기록 | 0건 |
+
+## 2026-05-27 — DB 설정 외부화와 schema-per-domain
 
 ### Changed
 
-- DB 접속정보를 `INTEREST_DB_*` 환경변수 기반으로 외부화했다.
-- `connector_db.py`의 password 하드코딩을 제거하고 `db_config.py`의 공통 `get_db_config()`를 사용하도록 변경했다.
-- README에 DB 접속 환경변수 설명을 추가했다.
-- PostgreSQL 기본 DB name을 `portfolio`로 정리하고, AWS Migration 준비 관점의 단일 DB `portfolio` + schema-per-domain 구조를 README에 반영했다.
-- 이 모듈의 DB connection `search_path`를 `connector, execution, legacy, reference, public`으로 문서화했다.
-- schema-per-domain 전환 후에도 기존 SQL은 connection `search_path` 기반으로 동작한다는 설명을 추가했다.
+| 항목 | 값 |
+| --- | --- |
+| DB 설정 | `INTEREST_DB_*` 환경변수 기반 |
+| Password | `connector_db.py` 하드코딩 제거 |
+| 공통 loader | `db_config.py`의 `get_db_config()` 사용 |
+| Database | `portfolio` |
+| Schema 구조 | 단일 DB · domain별 schema |
+| search path | `connector, execution, legacy, reference, public` |
+| 기존 SQL | connection `search_path` 기반 유지 |
 
-### Notes
+### Security
 
-- 실제 DB 접속, Flask app 실행, KIS/브로커 API 호출, token 발급/갱신, 주문/잔고/시세/체결 조회는 실행하지 않았다.
-- DB password 실제 값은 문서에 기록하지 않았다.
+| 항목 | 결과 |
+| --- | --- |
+| 실제 DB 접속 | 0건 |
+| Flask · KIS · broker 실행 | 0건 |
+| DB password 원문 기록 | 0건 |
 
-## 2026-05-26
+## 2026-05-26 — 초기 문서와 legacy 파일 정리
 
 ### Added
 
-- Python market connector 마이크로서비스의 루트 문서 초안을 추가했다.
-- 브로커 API, token, 주문, 잔고, 시세, DB 실행 위험에 대한 agent 작업 규칙을 추가했다.
-- 2026-05-26 문서화 작업 일지 초안을 추가했다.
+| 항목 | 값 |
+| --- | --- |
+| README | Python MarketConnector 프로젝트 초안 |
+| AGENTS | token · 주문 · DB 실행 위험 기준 |
+| Worklog | 2026-05-26 문서화 작업 일지 |
 
 ### Changed
 
-- 초기 문서 초안을 한국어 기준으로 정리했다.
-- legacy/단순 실행용 Python 파일 정리 결과에 맞춰 README와 AGENTS의 entrypoint 목록을 갱신했다.
+| 항목 | 값 |
+| --- | --- |
+| 문서 언어 | 한국어 기준으로 정리 |
+| Entrypoint 목록 | legacy 파일 정리 결과 반영 |
 
 ### Removed
 
-- legacy/단순 실행용 후보였던 `app.py`, `buy.py`, `balance.py`, `order_check.py`, `get_price_realtime.py`, `get_price_closed.py`를 제거했다.
-- Python bytecode cache인 `__pycache__/`를 제거했다.
+| 항목 | 값 |
+| --- | --- |
+| Legacy script | `app.py` · `buy.py` · `balance.py` |
+| Legacy script | `order_check.py` · `get_price_realtime.py` · `get_price_closed.py` |
+| Cache | `__pycache__` |
 
-### Notes
+### Security
 
-- Flask app, KIS/브로커 API, token 발급/갱신, 잔고/보유/시세/주문/체결 조회, 주문 제출, DB DDL/DML, 크롤러는 실행하지 않았다.
-- 민감정보 값은 문서에 기록하지 않았고 필요한 예시는 `[REDACTED]`로 표시했다.
+| 항목 | 결과 |
+| --- | --- |
+| Flask · KIS · broker 실행 | 0건 |
+| DB DDL · DML | 0건 |
+| 민감정보 원문 신규 기록 | 0건 |

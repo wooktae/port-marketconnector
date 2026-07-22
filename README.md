@@ -1,265 +1,472 @@
 # port-marketconnector
 
-KIS 국내 주식 API 연동을 위한 Python 기반 market connector 마이크로서비스다.
+한국투자증권 국내 주식 API와 PostgreSQL을 연결하는 Python 기반 MarketConnector 마이크로서비스다.
 
-이 저장소에는 Flask API entrypoint, 브로커 API client script, token 처리, 주문 제출 helper, 잔고/보유/시세 조회, PostgreSQL repository helper가 포함되어 있다.
+시세, 잔고, 포지션, 주문, 체결, 전략 주문과 장중 점검 데이터를 처리하고, port-view가 사용할 조회 API를 제공한다.
 
-이 문서는 정적 파일 분석만 기준으로 작성했다. 브로커 API, Flask app, token 발급/갱신, 잔고 조회, 주문 조회, 주문 제출, DB 명령은 실행하지 않았다.
+이 저장소의 실행 경로는 token 발급, 외부 API 호출, 주문 제출과 DB 쓰기로 이어질 수 있으므로 정적 분석과 문서 작업을 기본값으로 한다.
+
+## 현재 상태
+
+| 항목 | 값 |
+| --- | --- |
+| 운영 환경 | AWS Paper |
+| Compute | MarketConnector EC2 |
+| 원격 실행 | SSM RunCommand |
+| Daily 주문 | Step Functions approval 이후 실행 |
+| Intraday | Scheduler 기반 Snapshot Refresh · hard stop 판단 |
+| broker 주문 | 승인된 경로에서만 제출 |
+| View API | port-view 조회 연동 |
+| aws-live BUY/SELL | 🔴 미진행 |
+| 문서 기본 원칙 | token · 주문 · DB 실행 없이 정적 확인 |
+
+> Paper 환경도 실제 주문이 제출될 수 있다. 주문 관련 entrypoint와 Flask 실행 API를 일반 smoke test로 호출하지 않는다.
 
 ## 기술 스택
 
-- Python
-- Flask
-- Requests
-- psycopg v3
-- PostgreSQL
-- KIS 국내 주식 API 연동
+| 항목 | 값 |
+| --- | --- |
+| Language | Python |
+| API | Flask |
+| HTTP | Requests |
+| Database Driver | psycopg v3 |
+| Database | PostgreSQL |
+| Broker | KIS 국내 주식 API |
+| Compute | EC2 |
+| Remote Execution | SSM RunCommand |
 
-## 파일 구조 요약
+## 책임 경계
 
-- `connector_app.py`: 메인 Flask connector API. 실행 API와 View 조회 API를 함께 제공한다.
-- `token_manager.py`: access token 파일 처리, token 발급, token 갱신 helper.
-- `config.py`: KIS 및 계좌 관련 로컬 설정. 모든 값은 민감정보로 취급한다.
-- `connector_db.py`: connector/legacy 테이블용 PostgreSQL repository helper.
-- `connector_view_service.py`: dashboard, balance, positions, orders, order events, quote, strategy trades 조회 응답 조립.
-- `connector_order_common.py`: 주문 제출 공통 로직, order request 저장, broker 응답 반영, 취소/정정 공통 helper.
-- `connector_buy.py`, `connector_sell.py`: 매수/매도 주문 wrapper.
-- `connector_cancel.py`, `connector_modify.py`: 주문 취소/정정 wrapper.
-- `connector_balance.py`: 잔고/보유 조회 및 connector snapshot 저장 흐름.
-- `connector_order_check.py`: 주문/체결 조회 및 order event/fill 저장 흐름.
-- `connector_quote_realtime.py`, `connector_quote_closed.py`: 실시간 시세 및 기간 시세 조회 흐름. 옵션에 따라 DB 저장 가능.
-- `connector_strategy_order_execute.py`: Step 12 전략 execution order 제출 entrypoint. 기본은 dry run이며 `--execute` 사용 시 브로커 주문 제출과 DB 반영이 이어질 수 있다.
-- `connector_intraday_snapshot_refresh.py`: 장중 잔고/보유 snapshot 재조회 entrypoint. connector snapshot 저장 흐름을 담당한다.
-- `connector_intraday_position_evaluate.py`: 장중 보유 포지션 hard stop 판단 entrypoint. 조건 충족 시 READY execution order 생성과 Slack 통지가 발생할 수 있다.
-- `scripts/run_connector_balance_daily.sh`: 일일 잔고 snapshot 갱신 shell wrapper.
-- `docs/source-file-catalog.md`: AWS Migration 전 파일별 역할, 책임, 운영 주의사항을 정리한 파일 카탈로그.
+### 담당 범위
 
-## Flask API 요약
+| 영역 | 역할 |
+| --- | --- |
+| Token | KIS access token 발급 · 갱신 · 파일 관리 |
+| Quote | 현재가 · 실시간 · 기간 시세 조회 |
+| Balance | 계좌 잔고와 보유 Snapshot |
+| Order | 매수 · 매도 · 취소 · 정정 |
+| Order Sync | 주문 이벤트와 체결 동기화 |
+| Strategy Order | 승인된 전략 주문 제출 |
+| Intraday | Snapshot Refresh와 hard stop 판단 |
+| View API | port-view용 조회 API |
+| Persistence | connector · execution · legacy DB 연동 |
 
-`connector_app.py`는 두 종류의 route를 제공한다.
+### 직접 담당하지 않는 범위
 
-실행 API는 브로커 API 호출 또는 DB 쓰기를 수행할 수 있다.
+| 항목 | 실제 책임 영역 |
+| --- | --- |
+| 전략 생성 | Strategy Research |
+| 전략 판단 | Strategy Decision |
+| 주문 계획 | Strategy Execution |
+| Daily orchestration | Step Functions |
+| 자동 실행 시각 | EventBridge Scheduler |
+| View 화면 | port-view |
+| 데이터 수집 · 전처리 | Crawler · Preprocessor |
+| aws-live cutover | 별도 승인 범위 |
 
-- `GET /api/v1/quotes/realtime`: 실시간 시세 조회 및 DB 저장
-- `GET /api/v1/quotes/eod`: 기간 시세 조회 및 DB 저장
-- `GET /api/v1/accounts/balance`: 잔고/보유 조회 및 DB 저장
-- `POST /api/v1/orders/buy`: 매수 주문 흐름
-- `POST /api/v1/orders/sell`: 매도 주문 흐름
-- `POST /api/v1/orders/cancel`: 주문 취소 흐름
-- `POST /api/v1/orders/modify`: 주문 정정 흐름
-- `GET /api/v1/orders/history`: 주문/체결 조회 및 DB 저장
-- `GET /api/v1/price`: 실시간 시세 legacy alias
+## 주요 파일
 
-View API는 조회 중심이지만 DB 접근에 의존한다.
+| 파일 | 역할 |
+| --- | --- |
+| `connector_app.py` | Flask 실행 API와 View API |
+| `token_manager.py` | token 파일 · 발급 · 갱신 |
+| `config.py` | KIS와 계좌 로컬 설정 |
+| `db_config.py` | DB 환경변수 loader |
+| `connector_db.py` | connector · execution · legacy repository helper |
+| `connector_view_service.py` | View API 응답 조립 |
+| `connector_order_common.py` | 주문 공통 처리 |
+| `connector_buy.py` | 매수 주문 wrapper |
+| `connector_sell.py` | 매도 주문 wrapper |
+| `connector_cancel.py` | 주문 취소 wrapper |
+| `connector_modify.py` | 주문 정정 wrapper |
+| `connector_balance.py` | Daily 잔고와 포지션 Snapshot |
+| `connector_order_check.py` | 주문 이벤트와 체결 동기화 |
+| `connector_quote_realtime.py` | 실시간 시세 조회 |
+| `connector_quote_closed.py` | 기간 시세 조회 |
+| `connector_strategy_order_execute.py` | Daily 전략 주문 제출 |
+| `connector_intraday_snapshot_refresh.py` | 장중 Snapshot Refresh |
+| `connector_intraday_position_evaluate.py` | 장중 hard stop 판단 |
+| `scripts/run_connector_balance_daily.sh` | Daily 잔고 Snapshot wrapper |
+| `docs/source-file-catalog.md` | 주요 파일과 책임 |
 
-- `GET /api/v1/view/account-summary`
-- `GET /api/v1/view/dashboard`
-- `GET /api/v1/view/balance/latest`
-- `GET /api/v1/view/positions/latest`
-- `GET /api/v1/view/orders`
-- `GET /api/v1/view/orders/<order_request_id>`
-- `GET /api/v1/view/order-events`
-- `GET /api/v1/view/quotes/realtime/latest`
-- `GET /api/v1/view/quotes/eod`
-- `GET /api/v1/view/strategy/trades/recent`
+상세 역할은 [소스 파일 카탈로그](docs/source-file-catalog.md)를 참고한다.
 
-`connector_app.py`는 `GET /api/v1/price` legacy alias도 제공한다.
+## 실행 위험 등급
 
-## 주요 기능 영역
+### 최고 위험
 
-### Token Manager
+| 파일 | 위험 |
+| --- | --- |
+| `connector_buy.py` | 실제 매수 주문 가능 |
+| `connector_sell.py` | 실제 매도 주문 가능 |
+| `connector_cancel.py` | 주문 취소 가능 |
+| `connector_modify.py` | 주문 정정 가능 |
+| `connector_strategy_order_execute.py` | `--execute` 사용 시 전략 주문 가능 |
+| `connector_app.py` | route에 따라 주문 · API · DB 쓰기 가능 |
 
-`token_manager.py`는 아래 동작이 가능하다.
+### 외부 API와 DB 쓰기 위험
 
-- 기존 access token 파일 읽기
-- KIS token endpoint를 통한 새 token 발급
-- token 파일 삭제
-- API 응답에서 token 만료를 감지한 경우 token 갱신
+| 파일 | 위험 |
+| --- | --- |
+| `token_manager.py` | token 발급 · 갱신 · 파일 변경 |
+| `connector_balance.py` | 잔고 API · Snapshot 저장 |
+| `connector_order_check.py` | 주문 · 체결 조회와 저장 |
+| `connector_quote_realtime.py` | 시세 API · 선택적 저장 |
+| `connector_quote_closed.py` | 기간 시세 API · upsert |
+| `connector_intraday_snapshot_refresh.py` | 장중 잔고 API · Snapshot 저장 |
+| `connector_intraday_position_evaluate.py` | 점검 기록 · READY 주문 row 생성 가능 |
 
-문서 작업 또는 정적 분석 중에는 이 모듈을 실행하지 않는다. token 파일을 만들거나 삭제하거나 token 관련 값을 출력할 수 있다.
+`--no-save` 또는 dry run은 모든 side effect를 차단한다는 뜻이 아니다.
 
-### 잔고 및 보유 Snapshot
+token 발급과 외부 API 호출 가능성은 별도로 확인해야 한다.
 
-`connector_balance.py`는 KIS 잔고 API를 호출하고 계좌 요약 및 보유 종목을 파싱한 뒤 아래 테이블에 저장할 수 있다.
+## Flask API
 
-- `connector_balance_snapshot`
-- `connector_position_snapshot`
-- legacy `balance_summary`
-- legacy `holdings`
-- `connector_api_call_log`
+`connector_app.py`는 실행 API와 View API를 함께 제공한다.
 
-같은 계좌/일자의 stale `connector_position_snapshot` row를 삭제한 뒤 현재 보유 종목 기준으로 다시 저장할 수 있다.
+### 실행 API
 
-### 시세 조회
+| 경로 | 역할 · 위험 |
+| --- | --- |
+| `GET /api/v1/quotes/realtime` | 실시간 시세 조회 · DB 저장 가능 |
+| `GET /api/v1/quotes/eod` | 기간 시세 조회 · DB 저장 가능 |
+| `GET /api/v1/accounts/balance` | 잔고 조회 · Snapshot 저장 |
+| `POST /api/v1/orders/buy` | 매수 주문 |
+| `POST /api/v1/orders/sell` | 매도 주문 |
+| `POST /api/v1/orders/cancel` | 주문 취소 |
+| `POST /api/v1/orders/modify` | 주문 정정 |
+| `GET /api/v1/orders/history` | 주문 · 체결 조회와 저장 |
+| `GET /api/v1/price` | legacy 시세 alias |
 
-`connector_quote_realtime.py`는 실시간/현재가 API를 호출하고 `connector_quote_realtime`에 저장할 수 있다.
+실행 API를 health check나 문서 검증 목적으로 호출하지 않는다.
 
-`connector_quote_closed.py`는 기간 시세 API를 호출하고 `connector_quote_eod`에 upsert할 수 있다.
+### View API
 
-시세 script의 `--no-save` option은 DB 저장만 막는다. 외부 브로커 API 호출과 token 발급/갱신 가능성은 남아 있다.
+| 경로 | 역할 |
+| --- | --- |
+| `GET /api/v1/view/account-summary` | 계좌 요약 |
+| `GET /api/v1/view/dashboard` | Dashboard |
+| `GET /api/v1/view/balance/latest` | 최신 잔고 |
+| `GET /api/v1/view/positions/latest` | 최신 포지션 |
+| `GET /api/v1/view/orders` | 주문 목록 |
+| `GET /api/v1/view/orders/<order_request_id>` | 주문 상세 |
+| `GET /api/v1/view/order-events` | 주문 이벤트 |
+| `GET /api/v1/view/quotes/realtime/latest` | 최신 시세 |
+| `GET /api/v1/view/quotes/eod` | 기간 시세 |
+| `GET /api/v1/view/strategy/trades/recent` | 최근 전략 거래 |
 
-### 주문 제출
+View API는 조회 중심이지만 DB 연결과 민감정보 노출 범위를 확인해야 한다.
 
-`connector_buy.py`와 `connector_sell.py`는 `connector_order_common.py`의 공통 주문 로직을 사용한다.
+## Token
 
-주문 흐름은 아래 작업을 수행할 수 있다.
+`token_manager.py`는 다음 동작을 수행할 수 있다.
 
-- `connector_order_request` 생성
-- 브로커 주문 제출
-- 브로커 응답을 order request에 반영
-- strategy signal과 order mapping 저장
-- API call log 저장
+| 항목 | 내용 |
+| --- | --- |
+| 읽기 | 기존 token 파일 |
+| 발급 | KIS token endpoint |
+| 갱신 | 만료 감지 후 재발급 |
+| 삭제 | token 파일 제거 |
+| 저장 | 신규 token 파일 |
 
-`connector_cancel.py`와 `connector_modify.py`는 기존 broker order context를 조회한 뒤 취소/정정 요청을 제출할 수 있다.
+문서 작업과 정적 분석에서는 실행하지 않는다.
 
-### 주문 및 체결 동기화
+token 값과 token 파일 내용은 출력하거나 문서화하지 않는다.
 
-`connector_order_check.py`는 KIS 주문/체결 내역을 조회하고 아래 테이블에 저장할 수 있다.
+## Balance와 Position Snapshot
 
-- `connector_order_event`
-- `connector_fill`
-- legacy `trade_orders`
-- `connector_api_call_log`
+### Daily Snapshot
 
-브로커 주문번호를 `connector_order_request`와 매핑하는 흐름도 포함한다. direct 조회에서 `output1`이 비어도 `output2` summary가 있으면 broad search보다 direct fallback을 먼저 처리해 broad summary가 특정 주문 event/fill에 섞이지 않도록 순서를 유지한다.
+`connector_balance.py`는 KIS 잔고 API를 호출하고 계좌와 보유 데이터를 저장할 수 있다.
 
-### 전략 주문 실행 및 장중 운영 흐름
+| 대상 | 역할 |
+| --- | --- |
+| `connector.connector_balance_snapshot` | 계좌 요약 |
+| `connector.connector_position_snapshot` | 보유 포지션 |
+| `connector.connector_api_call_log` | API 호출 기록 |
+| legacy balance · holdings | 과거 호환 |
 
-2026-07-01 기준으로 아래 세 개의 신규 entrypoint가 운영에 사용된다. 세 파일 모두 실행 위험 파일로 취급한다.
+동일 계좌와 기준일의 stale position row를 현재 보유 기준으로 정리할 수 있다.
 
-- `connector_strategy_order_execute.py`
-  - 역할: 전략 daily execution order 중 `REQUESTED` 상태 주문을 KIS paper 계정으로 제출한다.
-  - 기본 동작은 dry run이며 `--execute` 옵션을 사용해야 실제 broker 호출 경로가 열린다.
-  - Step Functions 승인 gate `portfolio-paper-daily-step12-17-approval` 통과 후에만 `--execute`로 실행하는 것을 전제로 한다.
-  - 저장 흐름: `connector_order_request` 생성/갱신 및 `connector_api_call_log` 기록. 이후 후속 Step에서 `connector_order_check.py`의 direct/summary fallback 우선 경로로 `connector_order_event`, `connector_fill`이 채워진다.
-- `connector_intraday_snapshot_refresh.py`
-  - 역할: 장중 시간대에 KIS 잔고 API를 호출해 `connector_balance_snapshot`과 `connector_position_snapshot`을 갱신한다.
-  - `connector_balance.py`와 분리된 이유는 daily Step1 잔고 확정과 장중 monitor의 안전 요건이 다르기 때문이다.
-  - KIS `output1`이 비어 있을 때 `execution.strategy_position_state`에 OPEN 포지션이 남아 있으면 mismatch로 종료하고, OPEN이 없으면 정상 종료로 처리한다.
-  - 이 entrypoint는 전략 판단이나 broker 주문 제출을 수행하지 않는다.
-- `connector_intraday_position_evaluate.py`
-  - 역할: `strategy_position_state`에서 OPEN 포지션과 최신 connector snapshot을 조회해 hard stop 조건 여부를 판단한다.
-  - 판단 결과는 `execution.strategy_intraday_position_check`에 기록된다.
-  - hard stop 조건이 충족되면 `strategy_execution_order`에 READY 상태 매도 주문 row를 생성하고, `--notify-slack` 옵션이 있을 때 `portfolio-event-notifier` Lambda로 `INTRADAY_STOP_LOSS` 알림을 보낸다.
-  - 이 파일은 broker 주문 제출 경로를 포함하지 않는다. 실제 매도 주문 제출은 Step Functions 승인 gate `portfolio-paper-intraday-stop-sell-approval` 통과 후 후속 실행에서 처리된다.
+빈 보유 결과가 정상 청산인지 KIS 응답 이상인지 구분해야 한다.
 
-장중 자동화는 EventBridge Scheduler `portfolio-paper-intraday-snapshot-evaluate-10min-kst`가 09:10 KST부터 15:50 KST 사이에 10분 주기로 SSM RunCommand를 트리거하고, MarketConnector EC2에서 `connector_intraday_snapshot_refresh.py` → `connector_intraday_position_evaluate.py` 순서로 실행된다. 두 번째 실행은 `--create-order --notify-slack` 옵션과 함께 호출된다는 것을 전제로 한다.
+### Intraday Snapshot
 
-### EC2 및 SSM 운영 구조
+`connector_intraday_snapshot_refresh.py`는 장중 Snapshot을 갱신한다.
 
-MarketConnector는 EC2 인스턴스에서 SSM RunCommand로 실행되는 것을 기준으로 운영한다.
+| 상황 | 처리 |
+| --- | --- |
+| KIS 보유 있음 | Snapshot 저장 |
+| KIS 보유 없음 · OPEN 포지션 없음 | 정상 종료 가능 |
+| KIS 보유 없음 · OPEN 포지션 있음 | mismatch 실패 |
 
-- IAM Role: `portfolio-paper-marketconnector-ec2-role`.
-- Inline policy: `portfolio-paper-marketconnector-event-notifier-invoke`. `lambda:InvokeFunction` 권한을 `portfolio-event-notifier` Lambda에만 부여한다.
-- EC2 lifecycle Scheduler
-  - `portfolio-paper-ec2-start-0750-kst`: 07:50 KST에 EC2 start
-  - `portfolio-paper-marketconnector-stop-1550-kst`: 15:50 KST에 EC2 stop
-- 장중 실행 Scheduler
-  - `portfolio-paper-intraday-snapshot-evaluate-10min-kst`: 09:10 KST~15:50 KST 사이 10분 주기 실행 트리거
-- Slack notify 옵션은 MarketConnector 실행 결과를 `portfolio-event-notifier` Lambda로 위임하는 형태이며, 개별 스크립트가 Slack webhook을 직접 호출하지 않는다.
-- Step Functions 승인 gate
-  - `portfolio-paper-daily-step12-17-approval`: Step 12(`connector_strategy_order_execute.py --execute`) 승인 후 실행 gate
-  - `portfolio-paper-intraday-stop-sell-approval`: 장중 hard stop 매도 주문 제출 승인 gate
+이 entrypoint는 전략 판단과 broker 주문 제출을 담당하지 않는다.
 
-실제 IAM Role ARN, Lambda ARN, secret ARN, account-id, KIS app key/secret, token, 계좌번호, broker order number, DB password, Slack webhook URL, RDS endpoint hostname은 문서에 기록하지 않는다. 필요 시 `[REDACTED]`로만 표시한다.
+## Quote
 
-### DB Repository 및 Config
+| 파일 | 역할 |
+| --- | --- |
+| `connector_quote_realtime.py` | 현재가 · 실시간 시세 |
+| `connector_quote_closed.py` | 기간 시세 · EOD upsert |
 
-`connector_db.py`는 connector account, API call log, balance snapshot, position snapshot, quote, order request, order event, fill, legacy balance/holding/trade order, View 조회 helper를 포함한다.
+`--no-save`는 DB 저장만 차단할 수 있다.
 
-DB 접속정보는 `db_config.py`의 `get_db_config()`를 통해 `INTEREST_DB_*` 환경변수에서 읽는다. `INTEREST_DB_PASSWORD`는 기본값이 없으며 비어 있으면 실행 시 `RuntimeError`가 발생한다.
+외부 KIS 호출과 token 발급 가능성은 남아 있다.
 
-로컬 PostgreSQL 기본 DB name은 `portfolio`다. AWS Migration 준비 관점에서도 단일 PostgreSQL DB `portfolio` 안에 domain별 schema를 두는 schema-per-domain 구조를 기준으로 문서화한다.
+## 주문 처리
 
-이 모듈의 DB connection `search_path`는 아래 순서를 기준으로 적용한다.
+### 매수 · 매도
 
-```text
-connector, execution, legacy, reference, public
-```
+`connector_buy.py`와 `connector_sell.py`는 `connector_order_common.py`의 공통 로직을 사용한다.
 
-public에 있던 테이블은 domain schema로 이동되었지만, 이 모듈의 기존 SQL은 schema-qualified table name으로 바꾸지 않고 connection `search_path` 기반으로 동작한다. 따라서 기존 API 경로, 함수명, 테이블명, 브로커 요청 의미는 유지한다.
+주문 흐름:
 
-`config.py`와 DB password는 민감정보로 취급한다. 실제 값을 문서에 기록하지 않는다.
+1. 주문 요청 상태 확인
+2. `connector_order_request` 생성 또는 갱신
+3. KIS 주문 제출
+4. broker 응답 반영
+5. API call log 저장
+6. 후속 주문 · 체결 동기화
 
-## 설정 방법
+주문 retry는 조회 API와 동일하게 다루지 않는다.
 
-Python 가상환경을 만들고 필요한 package를 설치한다. 현재 루트에는 dependency lock 파일이 확인되지 않았다.
+자동 retry로 중복 주문을 만들지 않는다.
 
-예시 package:
+### 취소 · 정정
+
+| 파일 | 역할 |
+| --- | --- |
+| `connector_cancel.py` | 기존 주문 취소 |
+| `connector_modify.py` | 기존 주문 정정 |
+
+원주문 context와 broker 주문 상태를 확인한 뒤 수행한다.
+
+### 주문 · 체결 동기화
+
+`connector_order_check.py`는 다음 데이터를 저장할 수 있다.
+
+| 대상 | 역할 |
+| --- | --- |
+| `connector.connector_order_event` | 주문 상태 이벤트 |
+| `connector.connector_fill` | 체결 |
+| `connector.connector_api_call_log` | API 호출 기록 |
+| legacy trade orders | 과거 호환 |
+
+direct 조회에서 상세 `output1`이 비어도 `output2` summary가 있으면 broad search보다 direct fallback을 먼저 처리한다.
+
+broad summary를 특정 주문의 event나 fill로 잘못 귀속하지 않는다.
+
+## Daily 전략 주문
+
+`connector_strategy_order_execute.py`는 승인된 전략 주문을 KIS Paper 계정으로 제출한다.
+
+| 항목 | 값 |
+| --- | --- |
+| 대상 | 전략 실행 주문 |
+| 기본 동작 | dry run |
+| 실제 제출 | `--execute` |
+| 승인 gate | `portfolio-paper-daily-step12-17-approval` |
+| 저장 | order request · API call log |
+| 후속 | `connector_order_check.py` |
+
+approval workflow를 통과하지 않은 상태에서 `--execute`를 사용하지 않는다.
+
+## Intraday hard stop
+
+장중 흐름은 판단과 실제 주문 제출을 분리한다.
+
+| 단계 | 책임 |
+| --- | --- |
+| Snapshot | `connector_intraday_snapshot_refresh.py` |
+| 판단 | `connector_intraday_position_evaluate.py` |
+| 결과 기록 | `execution.strategy_intraday_position_check` |
+| 주문 후보 | `execution.strategy_execution_order` READY 매도 |
+| 알림 | event notifier Lambda |
+| 실제 매도 | 별도 approval workflow 이후 |
+
+hard stop 조건이 충족되어도 판단 entrypoint 자체는 broker 주문을 제출하지 않는다.
+
+실제 매도 제출은 `portfolio-paper-intraday-stop-sell-approval` 이후 처리한다.
+
+## EC2와 SSM 운영
+
+MarketConnector는 EC2에서 SSM RunCommand로 실행되는 구조다.
+
+### 운영 흐름
+
+| 항목 | 값 |
+| --- | --- |
+| EC2 start | 07:50 KST Scheduler |
+| Daily 실행 | Step Functions → SSM |
+| Intraday 실행 | 09:10~15:50 KST · 10분 주기 |
+| 실행 순서 | Snapshot Refresh → Position Evaluate |
+| 알림 | event notifier Lambda |
+| EC2 stop | 15:50 KST Scheduler |
+
+### 운영 식별자
+
+| 항목 | 이름 |
+| --- | --- |
+| EC2 Role | `portfolio-paper-marketconnector-ec2-role` |
+| Lambda invoke policy | `portfolio-paper-marketconnector-event-notifier-invoke` |
+| EC2 start Scheduler | `portfolio-paper-ec2-start-0750-kst` |
+| EC2 stop Scheduler | `portfolio-paper-marketconnector-stop-1550-kst` |
+| Intraday Scheduler | `portfolio-paper-intraday-snapshot-evaluate-10min-kst` |
+
+실제 ARN, instance id, command id, account-id와 public IP는 문서에 기록하지 않는다.
+
+## Database
+
+### 연결 기준
+
+| 항목 | 값 |
+| --- | --- |
+| Database | `portfolio` |
+| Config loader | `db_config.py` · `get_db_config()` |
+| 환경변수 | `INTEREST_DB_*` |
+| Password | 기본값 없음 |
+| search path | `connector, execution, legacy, reference, public` |
+
+운영 환경에서는 Connector 전용 DB user를 사용한다.
+
+문서의 예시 기본 user를 운영 권한 기준으로 해석하지 않는다.
+
+### Schema 책임
+
+| Schema | 역할 |
+| --- | --- |
+| `connector` | 계좌 · Snapshot · 시세 · 주문 · 체결 |
+| `execution` | 전략 주문 · position state · intraday check |
+| `legacy` | 과거 호환 |
+| `reference` | 종목과 공통 기준정보 |
+| `public` | fallback search path |
+
+신규 SQL은 가능한 한 schema-qualified 이름을 사용한다.
+
+기존 unqualified SQL은 connection `search_path` 기준으로 동작한다.
+
+### 주요 쓰기 테이블
+
+| 영역 | 테이블 |
+| --- | --- |
+| API Log | `connector.connector_api_call_log` |
+| Balance | `connector.connector_balance_snapshot` |
+| Position | `connector.connector_position_snapshot` |
+| Quote | `connector.connector_quote_realtime` · `connector.connector_quote_eod` |
+| Order | `connector.connector_order_request` |
+| Order Event | `connector.connector_order_event` |
+| Fill | `connector.connector_fill` |
+| Strategy Order | `execution.strategy_execution_order` |
+| Intraday Check | `execution.strategy_intraday_position_check` |
+
+실제 컬럼과 table은 코드와 DB 계약을 확인한다.
+
+추정 컬럼명으로 SQL을 작성하지 않는다.
+
+## 설정
+
+현재 dependency lock 파일은 확인되지 않았다.
+
+예시 package 설치:
 
 ```powershell
 pip install flask requests psycopg
 ```
 
-설정값은 로컬 Python config 변수와 DB 연결 설정에서 주입되는 구조다. 민감정보는 source control 밖에서 관리하는 것이 적합하다.
+민감정보는 source control 밖에서 관리한다.
 
-- KIS app key: `[REDACTED]`
-- KIS app secret: `[REDACTED]`
-- KIS base URL: `[REDACTED]`
-- 계좌번호: `[REDACTED]`
-- 계좌 상품 코드: `[REDACTED]`
-- `INTEREST_DB_HOST`: PostgreSQL host. 기본값은 `localhost`.
-- `INTEREST_DB_PORT`: PostgreSQL port. 기본값은 `5433`.
-- `INTEREST_DB_NAME`: PostgreSQL database name. 기본값은 `portfolio`.
-- `PORTFOLIO_DB_NAME`: 포트폴리오 공통 DB name을 별도 환경변수로 설명하거나 사용하는 경우에도 기본값은 `portfolio`로 맞춘다.
-- `INTEREST_DB_USER`: PostgreSQL user. 기본값은 `postgres`.
-- `INTEREST_DB_PASSWORD`: PostgreSQL password. 기본값 없음. 예시는 `[REDACTED]`.
+### DB 환경변수
 
-## 실행 방법
+| 환경변수 | 기본값 · 역할 |
+| --- | --- |
+| `INTEREST_DB_HOST` | `localhost` |
+| `INTEREST_DB_PORT` | `5433` |
+| `INTEREST_DB_NAME` | `portfolio` |
+| `PORTFOLIO_DB_NAME` | `portfolio` |
+| `INTEREST_DB_USER` | 환경별 Connector DB user |
+| `INTEREST_DB_PASSWORD` | 기본값 없음 |
 
-운영자가 브로커 API 호출 또는 DB 쓰기를 의도한 경우가 아니라면 connector app과 script를 실행하지 않는다.
+### KIS 설정
 
-아래 명령은 구조 이해를 위한 예시일 뿐이다.
+| 항목 | 처리 |
+| --- | --- |
+| App key | `[REDACTED]` |
+| App secret | `[REDACTED]` |
+| Base URL | 환경별 설정 |
+| 계좌번호 | `[REDACTED_ACCOUNT_NO]` |
+| 상품 코드 | `[REDACTED]` |
+| Token | local file 또는 외부 관리 |
+
+`config.py`, token 파일과 local secret 값을 문서에 옮기지 않는다.
+
+## 실행
+
+운영자가 외부 API 호출, 주문 또는 DB 쓰기를 명시적으로 의도한 경우가 아니라면 실행하지 않는다.
+
+아래 명령은 실행 위험 예시다.
 
 ```powershell
 python connector_app.py
 ```
 
-위 명령은 route 사용 방식에 따라 브로커 API 접근으로 이어질 수 있으므로 실행 위험 명령으로 취급한다.
+Flask 실행 후 route 호출에 따라 KIS API와 DB 쓰기로 이어질 수 있다.
 
-## 실행 위험 목록
+## 실행 금지 목록
 
-문서 작업 중에는 아래 명령을 실행하지 않는다.
+문서 작업과 정적 분석 중에는 아래 entrypoint를 실행하지 않는다.
 
-- `python token_manager.py`
-- `python connector_app.py`
-- `python connector_buy.py`
-- `python connector_sell.py`
-- `python connector_cancel.py`
-- `python connector_modify.py`
-- `python connector_balance.py`
-- `python connector_order_check.py`
-- `python connector_quote_realtime.py`
-- `python connector_quote_closed.py`
-- `python connector_strategy_order_execute.py`
-- `python connector_intraday_snapshot_refresh.py`
-- `python connector_intraday_position_evaluate.py`
+- `token_manager.py`
+- `connector_app.py`
+- `connector_buy.py`
+- `connector_sell.py`
+- `connector_cancel.py`
+- `connector_modify.py`
+- `connector_balance.py`
+- `connector_order_check.py`
+- `connector_quote_realtime.py`
+- `connector_quote_closed.py`
+- `connector_strategy_order_execute.py`
+- `connector_intraday_snapshot_refresh.py`
+- `connector_intraday_position_evaluate.py`
 
-위 entrypoint는 token 발급/갱신, KIS/브로커 API 호출, 주문 제출, 잔고/보유/체결/시세 조회, DB 저장, 장중 stop-loss 판단, `strategy_execution_order` READY 생성, `portfolio-event-notifier` Lambda 호출을 수행할 수 있다.
+## 보안
 
-## 민감정보 규칙
+다음 값은 코드, 문서와 로그에 원문으로 기록하지 않는다.
 
-- token 값, app key, app secret, 계좌번호, DB 접속정보, 원본 connection string을 출력하지 않는다.
-- `access_token.txt` 같은 token 파일을 읽거나 인용하지 않는다.
-- 민감정보는 환경변수 또는 source control 밖의 로컬 설정으로 관리하고, 실제 password/token/account/webhook 값을 문서에 쓰지 않는다.
-- 문서에 필요한 예시는 `[REDACTED]`로 마스킹한다.
-- debug/output dump 파일은 운영 소스로 단정하지 않고 로컬 산출물 또는 후보로만 표현한다.
+- access token
+- KIS app key · app secret
+- 실제 계좌번호
+- DB password와 connection string
+- broker 주문번호 전체
+- Slack webhook URL
+- AWS account-id
+- 실제 ARN
+- public IP
+- RDS hostname
+- SSM command id
 
-## 문서 변경 검증
+Placeholder:
 
-문서만 수정한 경우 아래 명령만 사용한다.
+| 값 | Placeholder |
+| --- | --- |
+| 일반 민감정보 | `[REDACTED]` |
+| 계좌번호 | `[REDACTED_ACCOUNT_NO]` |
+| broker 주문번호 | `[REDACTED_BROKER_ORDER_NO]` |
+| ARN | `[REDACTED_ARN]` |
+| secret ARN | `[REDACTED_SECRET_ARN]` |
+| public IP | `[REDACTED_PUBLIC_IP]` |
+| RDS hostname | `[REDACTED_RDS_HOST]` |
+| command id | `[REDACTED_COMMAND_ID]` |
 
-```powershell
-git status --short
-git diff --stat
-```
+## 문서
 
-문서 검증을 위해 Flask, KIS, 브로커, token, 잔고, 보유, 시세, 주문, 체결, 크롤러, DB 명령을 실행하지 않는다.
+| 문서 | 역할 |
+| --- | --- |
+| `AGENTS.md` | port-marketconnector 작업 규칙 |
+| `README.md` | 현재 구조와 운영 AS-IS |
+| `CHANGELOG.md` | 주요 변경 이력 |
+| `docs/source-file-catalog.md` | 주요 파일과 책임 |
 
-## 문서화 산출물
+날짜별 `docs/worklog/*.md`는 신규 생성하지 않는다.
 
-2026-05-28 기준으로 `docs/source-file-catalog.md`를 추가해 repository의 주요 Python 소스와 문서 파일을 한글로 정리했다.
-
-Python 파일에는 module docstring과 운영상 중요한 핵심 함수 docstring을 추가했다. 이 변경은 파일 역할과 실행 위험 설명을 위한 주석 정리이며, API 경로, 함수명, DB 테이블명, 브로커 요청 의미, 실행 순서는 변경하지 않았다.
-
-2026-07-01 기준으로 신규 entrypoint 3종(`connector_strategy_order_execute.py`, `connector_intraday_snapshot_refresh.py`, `connector_intraday_position_evaluate.py`)과 EC2/SSM 운영 구조, 장중 10분 주기 snapshot refresh 및 stop-loss 승인 gate 연계를 README에 반영했다. 다른 마이크로서비스(port-view, StrategyExecution, StrategyDecision, StrategyResearch, Crawler, Preprocessor)의 내부 로직과 Step Functions/EventBridge/Lambda 내부 구현 상세는 반영 범위에서 제외했다.
+문서 변경 이력은 `CHANGELOG.md`에 기록한다.
