@@ -1,5 +1,28 @@
 # CHANGELOG
 
+## 2026-07-01
+
+### Added
+
+- README에 신규 entrypoint 3종(`connector_strategy_order_execute.py`, `connector_intraday_snapshot_refresh.py`, `connector_intraday_position_evaluate.py`) 전용 섹션을 추가했다.
+- README에 EC2 + SSM RunCommand 운영 구조 섹션을 추가했다. IAM Role `portfolio-paper-marketconnector-ec2-role`, inline policy `portfolio-paper-marketconnector-event-notifier-invoke`, EC2 lifecycle Scheduler `portfolio-paper-ec2-start-0750-kst`, `portfolio-paper-marketconnector-stop-1550-kst`, 장중 10분 주기 Scheduler `portfolio-paper-intraday-snapshot-evaluate-10min-kst`를 서술했다.
+- README에 장중 stop-loss 흐름과 승인 gate 연계를 서술했다. `strategy_execution_order` READY 생성 및 `portfolio-event-notifier` Lambda로의 `INTRADAY_STOP_LOSS` Slack 통지까지는 자동으로 진행되고, broker 주문 제출은 `portfolio-paper-intraday-stop-sell-approval` Step Functions 승인 후에 이어진다는 점을 명시했다.
+- README에 Step 12 KIS paper 주문 제출이 `portfolio-paper-daily-step12-17-approval` 승인 gate를 전제로 한다는 점을 명시했다.
+- README 실행 위험 목록에 신규 entrypoint 3종을 추가했다.
+- `docs/worklog/2026-07-01.md` 작업 일지를 추가했다.
+
+### Changed
+
+- README 파일 구조 요약에 신규 entrypoint 3종과 `scripts/run_connector_balance_daily.sh` 항목을 반영했다.
+- 주문 및 체결 동기화 섹션에 `connector_order_check.py`의 direct/summary fallback 우선 처리 취지를 짧게 병기했다.
+
+### Notes
+
+- 기능 변경 없음. 이번 변경은 md 문서에 한정된 최신화 작업이다.
+- Flask app 실행, KIS/브로커 API 호출, token 발급/갱신, 잔고/보유/시세/주문/체결 조회, 주문 제출/취소/정정, DB DDL/DML, AWS API 호출, SSM RunCommand 발행, Slack webhook 호출은 실행하지 않았다.
+- 다른 마이크로서비스(port-view, StrategyExecution, StrategyDecision, StrategyResearch, Crawler, Preprocessor) 내부 상세, Step Functions state machine 전체 step, EventBridge Scheduler 전체 라인업, Lambda 내부 구현, command id, 실행 시간, 일회성 검증 로그는 반영 범위에서 제외했다.
+- IAM Role ARN, Lambda ARN, secret ARN, account-id, KIS app key/secret, token 값, 계좌번호 전체, broker order number 전체, DB password, Slack webhook URL, RDS endpoint hostname은 문서에 기록하지 않았다.
+
 ## 2026-05-28
 
 ### Added

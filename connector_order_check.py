@@ -5,6 +5,7 @@
 """
 
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -29,7 +30,22 @@ from connector_db import (
 )
 from token_manager import check_and_refresh_token, get_access_token
 
-SOURCE_VERSION = "connector-order-check-2.0.1"
+SOURCE_VERSION = "connector-order-check-2.0.3"
+
+ACTIVE_ORDER_STATUSES = {
+    "ACCEPTED",
+    "SUBMITTED",
+    "PENDING",
+    "PARTIAL_FILLED",
+    "PARTIALLY_FILLED",
+}
+SUCCESS_TERMINAL_ORDER_STATUSES = {"FILLED"}
+FAILURE_TERMINAL_ORDER_STATUSES = {"REJECTED", "CANCELED", "CANCELLED", "FAILED"}
+DEFAULT_ACTIVE_POLL_COUNT = int(os.environ.get("STEP13_ACTIVE_POLL_COUNT", "3"))
+DEFAULT_ACTIVE_POLL_INTERVAL_SECONDS = float(
+    os.environ.get("STEP13_ACTIVE_POLL_INTERVAL_SECONDS", "10.0")
+)
+INTER_ORDER_WAIT_SECONDS = float(os.environ.get("STEP13_INTER_ORDER_WAIT_SECONDS", "5.0"))
 API_NAME = "inquire-daily-ccld"
 TR_ID = "VTTC8001R"
 ENDPOINT = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
@@ -309,42 +325,69 @@ def _call_order_history(account_id: int, params: dict):
         print("❌ 토큰 없음")
         return None, None, None
 
-    res, latency_ms = _request_history(account_id, token, params)
-    if res is None:
-        return None, params, latency_ms
+    # 최초 요청 + EGW00201 발생 시 최대 2회 재시도
+    max_rate_limit_retries = 2
+    rate_limit_retry_wait_seconds = (1.5, 5.0)
+    rate_limit_retry_count = 0
 
-    new_tok = check_and_refresh_token(res.text)
-    if new_tok:
-        print("🔄 토큰 오류 감지 → 재발급 + 재요청")
-        res, latency_ms = _request_history(account_id, new_tok, params)
+    while True:
+        res, latency_ms = _request_history(account_id, token, params)
         if res is None:
             return None, params, latency_ms
 
-    print("📌 주문/체결 조회 Status:", res.status_code)
+        new_tok = check_and_refresh_token(res.text)
+        if new_tok:
+            print("🔄 토큰 오류 감지 → 재발급 + 재요청")
+            token = new_tok
+            res, latency_ms = _request_history(account_id, token, params)
+            if res is None:
+                return None, params, latency_ms
 
-    try:
-        data = res.json()
-    except Exception as e:
-        print("❌ JSON 파싱 실패:", e)
-        return None, params, latency_ms
+        print("📌 주문/체결 조회 Status:", res.status_code)
 
-    insert_api_call_log(
-        account_id=account_id,
-        api_category="ORDER",
-        api_name=API_NAME,
-        http_method="GET",
-        endpoint=ENDPOINT,
-        tr_id=TR_ID,
-        request_params=params,
-        response_status=res.status_code,
-        response_code=data.get("rt_cd"),
-        response_message=data.get("msg1"),
-        response_body=data,
-        is_success=(data.get("rt_cd") == "0"),
-        latency_ms=latency_ms,
-    )
+        try:
+            data = res.json()
+        except Exception as e:
+            print("❌ JSON 파싱 실패:", e)
+            return None, params, latency_ms
 
-    return data, params, latency_ms
+        insert_api_call_log(
+            account_id=account_id,
+            api_category="ORDER",
+            api_name=API_NAME,
+            http_method="GET",
+            endpoint=ENDPOINT,
+            tr_id=TR_ID,
+            request_params=params,
+            response_status=res.status_code,
+            response_code=data.get("rt_cd"),
+            response_message=data.get("msg1"),
+            response_body=data,
+            is_success=(data.get("rt_cd") == "0"),
+            latency_ms=latency_ms,
+        )
+
+        message_code = str(data.get("msg_cd") or "").strip()
+        if message_code != "EGW00201":
+            return data, params, latency_ms
+
+        if rate_limit_retry_count >= max_rate_limit_retries:
+            print(
+                "❌ 주문/체결 조회 rate limit 재시도 소진: "
+                f"msg_cd={message_code}, retries={rate_limit_retry_count}"
+            )
+            return data, params, latency_ms
+
+        wait_seconds = rate_limit_retry_wait_seconds[rate_limit_retry_count]
+        rate_limit_retry_count += 1
+
+        print(
+            "⚠ 주문/체결 조회 rate limit 감지: "
+            f"msg_cd={message_code}, "
+            f"retry={rate_limit_retry_count}/{max_rate_limit_retries}, "
+            f"retry_after={wait_seconds}s"
+        )
+        time.sleep(wait_seconds)
 
 
 def _derive_status(order_qty: int, executed_qty: int, cancel_flag: str):
@@ -822,18 +865,53 @@ def _find_active_order_contexts(limit: Optional[int] = None):
     return contexts
 
 
+def _get_order_request_status(order_request_id: int) -> Optional[str]:
+    """DB에 반영된 connector 주문의 최신 상태를 조회한다."""
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT request_status
+                FROM connector_order_request
+                WHERE id = %s
+                """,
+                (order_request_id,),
+            )
+            row = cur.fetchone()
+
+    if not row or row[0] is None:
+        return None
+    return str(row[0]).strip().upper()
+
+
 def reconcile_active_orders(
     start_date: str,
     end_date: str,
     limit: Optional[int] = None,
+    poll_count: int = DEFAULT_ACTIVE_POLL_COUNT,
+    poll_interval_seconds: float = DEFAULT_ACTIVE_POLL_INTERVAL_SECONDS,
 ):
     """
     Step 13 기본 모드.
 
-    active 주문을 먼저 조회한 뒤 주문번호/종목코드 기준으로 1건씩 순차 체결조회한다.
-    이 함수가 wrapper의 기본 실행 경로가 되면 ps1은 복잡한 DB loop 없이
-    python connector_order_check.py 만 실행하면 된다.
+    active 주문을 주문번호/종목코드 기준으로 한 건씩 조회한다. 조회 후에도
+    ACCEPTED/PARTIAL_FILLED 계열 상태가 남으면 제한 횟수만큼 polling한다.
+
+    성공 조건:
+    - 각 대상 주문이 FILLED로 전이됨
+
+    실패 조건:
+    - API/DB 처리 실패
+    - REJECTED/CANCELED/FAILED 같은 실패 terminal 상태
+    - polling 소진 후에도 active 상태 유지
+    - 상태 row 누락 또는 알 수 없는 상태
     """
+
+    if poll_count < 0:
+        raise ValueError("poll_count must be >= 0")
+    if poll_interval_seconds < 0:
+        raise ValueError("poll_interval_seconds must be >= 0")
 
     active_orders = _find_active_order_contexts(limit=limit)
 
@@ -841,12 +919,24 @@ def reconcile_active_orders(
         print("\n✅ Step 13 skip: active connector order 없음")
         return 0
 
-    print(f"\n📌 Step 13 active 주문 단건 순차 조회 시작: {len(active_orders)}건")
+    max_attempts = poll_count + 1
+    print(
+        f"\n📌 Step 13 active 주문 단건 순차 조회 시작: {len(active_orders)}건, "
+        f"max_attempts={max_attempts}, poll_interval={poll_interval_seconds}s"
+    )
 
     success_count = 0
     failure_count = 0
+    pending_exhausted_count = 0
 
     for idx, order in enumerate(active_orders, start=1):
+        if idx > 1 and INTER_ORDER_WAIT_SECONDS > 0:
+            print(
+                f"⏳ Step 13 주문별 조회 간격 대기: "
+                f"{INTER_ORDER_WAIT_SECONDS}s"
+            )
+            time.sleep(INTER_ORDER_WAIT_SECONDS)
+
         order_request_id = order["order_request_id"]
         ticker_code = order["ticker_code"]
         broker_order_no = order["broker_order_no"]
@@ -858,48 +948,108 @@ def reconcile_active_orders(
             + f"\n🔎 Step 13 per-order check {idx}/{len(active_orders)} "
             f"id={order_request_id}, code={ticker_code}, "
             f"order_no={broker_order_no}, branch={broker_branch_code or ''}, "
-            f"qty={order['order_qty']}, status={order['request_status']}"
+            f"qty={order['order_qty']}, initial_status={order['request_status']}"
             + "\n"
             + "=" * 80
         )
 
-        try:
-            result = fetch_and_save_orders(
-                start_date=start_date,
-                end_date=end_date,
-                stock_code=ticker_code,
-                order_no=broker_order_no,
-                branch_code=broker_branch_code,
-                try_broad_search_if_empty=False,
-            )
-            if result is None:
-                failure_count += 1
+        order_succeeded = False
+        order_failed = False
+
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1 and poll_interval_seconds > 0:
                 print(
-                    f"❌ Step 13 per-order check 실패: "
-                    f"id={order_request_id}, code={ticker_code}, order_no={broker_order_no}"
+                    f"⏳ Step 13 active 상태 polling 대기: "
+                    f"id={order_request_id}, attempt={attempt}/{max_attempts}, "
+                    f"wait={poll_interval_seconds}s"
                 )
-            else:
-                success_count += 1
+                time.sleep(poll_interval_seconds)
+
+            try:
+                result = fetch_and_save_orders(
+                    start_date=start_date,
+                    end_date=end_date,
+                    stock_code=ticker_code,
+                    order_no=broker_order_no,
+                    branch_code=broker_branch_code,
+                    try_broad_search_if_empty=False,
+                )
+                if result is None:
+                    print(
+                        f"❌ Step 13 per-order API/DB 처리 실패: "
+                        f"id={order_request_id}, attempt={attempt}/{max_attempts}"
+                    )
+                    order_failed = True
+                    break
+
+                latest_status = _get_order_request_status(order_request_id)
                 print(
-                    f"✅ Step 13 per-order check 완료: "
-                    f"id={order_request_id}, code={ticker_code}, order_no={broker_order_no}"
+                    f"📌 Step 13 polling 결과: id={order_request_id}, "
+                    f"attempt={attempt}/{max_attempts}, status={latest_status}"
                 )
-        except Exception as e:
+
+                if latest_status in SUCCESS_TERMINAL_ORDER_STATUSES:
+                    order_succeeded = True
+                    print(
+                        f"✅ Step 13 주문 체결 완료: "
+                        f"id={order_request_id}, status={latest_status}"
+                    )
+                    break
+
+                if latest_status in FAILURE_TERMINAL_ORDER_STATUSES:
+                    print(
+                        f"❌ Step 13 주문 실패 terminal 상태: "
+                        f"id={order_request_id}, status={latest_status}"
+                    )
+                    order_failed = True
+                    break
+
+                if latest_status in ACTIVE_ORDER_STATUSES:
+                    if attempt < max_attempts:
+                        continue
+
+                    pending_exhausted_count += 1
+                    print(
+                        f"❌ Step 13 polling 소진 후 active 상태 유지: "
+                        f"id={order_request_id}, status={latest_status}, "
+                        f"attempts={max_attempts}"
+                    )
+                    order_failed = True
+                    break
+
+                print(
+                    f"❌ Step 13 알 수 없는 주문 상태: "
+                    f"id={order_request_id}, status={latest_status}"
+                )
+                order_failed = True
+                break
+
+            except Exception as e:
+                print(
+                    f"❌ Step 13 per-order check 예외: "
+                    f"id={order_request_id}, attempt={attempt}/{max_attempts}, error={e}"
+                )
+                order_failed = True
+                break
+
+        if order_succeeded:
+            success_count += 1
+        elif order_failed:
+            failure_count += 1
+        else:
             failure_count += 1
             print(
-                f"❌ Step 13 per-order check 예외: "
-                f"id={order_request_id}, code={ticker_code}, order_no={broker_order_no}, error={e}"
+                f"❌ Step 13 주문 최종 상태 미결정: "
+                f"id={order_request_id}"
             )
 
     print(
-        "\n📌 Step 13 active 주문 단건 순차 조회 요약: "
-        f"success={success_count}, failed={failure_count}, total={len(active_orders)}"
+        "\n📌 Step 13 active 주문 polling 요약: "
+        f"success={success_count}, failed={failure_count}, "
+        f"pending_exhausted={pending_exhausted_count}, total={len(active_orders)}"
     )
 
-    if failure_count > 0:
-        return 1
-
-    return 0
+    return 1 if failure_count > 0 else 0
 
 
 def fetch_and_save_orders(
@@ -1070,6 +1220,24 @@ if __name__ == "__main__":
         default=None,
         help="기본 active 주문 단건 순차 조회 최대 처리 건수",
     )
+    parser.add_argument(
+        "--active-poll-count",
+        type=int,
+        default=DEFAULT_ACTIVE_POLL_COUNT,
+        help=(
+            "최초 조회 후 active 상태일 때 추가 polling 횟수 "
+            f"(기본값: {DEFAULT_ACTIVE_POLL_COUNT})"
+        ),
+    )
+    parser.add_argument(
+        "--active-poll-interval",
+        type=float,
+        default=DEFAULT_ACTIVE_POLL_INTERVAL_SECONDS,
+        help=(
+            "active 주문 polling 간 대기 초 "
+            f"(기본값: {DEFAULT_ACTIVE_POLL_INTERVAL_SECONDS})"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -1102,5 +1270,7 @@ if __name__ == "__main__":
             start_date=args.start,
             end_date=args.end,
             limit=args.active_limit,
+            poll_count=args.active_poll_count,
+            poll_interval_seconds=args.active_poll_interval,
         )
     )
