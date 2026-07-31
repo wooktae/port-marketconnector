@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
@@ -27,5 +27,12 @@ token*.txt
 *.jsonl
 
 # Local test / scratch files
-test*.py
+/test*.py
 debug_*.py
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+.devops/artifacts/
+.devops/packages/
+*.zip
