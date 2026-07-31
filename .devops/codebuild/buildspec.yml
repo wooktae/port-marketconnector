@@ -1,0 +1,94 @@
+version: 0.2
+
+env:
+  shell: bash
+  variables:
+    PUSH_ARTIFACT: "false"
+    ARTIFACT_BUCKET: ""
+    ARTIFACT_PREFIX: "marketconnector"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.13
+    commands:
+      - set -euo pipefail
+      - echo "=== INSTALL DEPENDENCIES ==="
+      - python --version
+      - python -m pip install --upgrade pip
+      - python -m pip install -r requirements-dev.txt
+
+  pre_build:
+    commands:
+      - set -euo pipefail
+      - echo "=== VERIFY SOURCE IDENTITY ==="
+      - SOURCE_SHA="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+      - |
+        if [ -z "${SOURCE_SHA}" ]; then
+          echo "SOURCE_SHA=EMPTY"
+          exit 10
+        fi
+      - SHORT_SHA="$(printf '%s' "${SOURCE_SHA}" | cut -c1-12)"
+      - echo "SOURCE_SHA=${SOURCE_SHA}"
+      - echo "SHORT_SHA=${SHORT_SHA}"
+      - echo "PUSH_ARTIFACT=${PUSH_ARTIFACT}"
+      - echo "=== RUN PYTHON COMPILE ==="
+      - python .devops/scripts/compile_check.py
+      - echo "=== RUN TESTS ==="
+      - python -m pytest
+      - echo "=== RUN STATIC ANALYSIS ==="
+      - python -m ruff check .devops/scripts tests
+      - echo "QUALITY_GATE=SUCCESS"
+
+  build:
+    commands:
+      - set -euo pipefail
+      - echo "=== BUILD VERSIONED ZIP ==="
+      - python .devops/scripts/build_bundle.py --expected-sha "${SOURCE_SHA}"
+      - BUNDLE_NAME="port-marketconnector-${SHORT_SHA}.zip"
+      - BUNDLE_PATH=".devops/artifacts/${BUNDLE_NAME}"
+      - |
+        if [ ! -f "${BUNDLE_PATH}" ]; then
+          echo "BUNDLE_FILE_MISSING=${BUNDLE_PATH}"
+          exit 20
+        fi
+      - BUNDLE_SHA256="$(sha256sum "${BUNDLE_PATH}" | awk '{print $1}')"
+      - echo "BUNDLE_NAME=${BUNDLE_NAME}"
+      - echo "BUNDLE_PATH=${BUNDLE_PATH}"
+      - echo "BUNDLE_SHA256=${BUNDLE_SHA256}"
+      - echo "VERSIONED_ZIP_BUILD=SUCCESS"
+
+  post_build:
+    commands:
+      - set -euo pipefail
+      - echo "=== OPTIONAL S3 ARTIFACT PUSH ==="
+      - |
+        if [ "${PUSH_ARTIFACT}" = "true" ]; then
+          if [ -z "${ARTIFACT_BUCKET}" ]; then
+            echo "ARTIFACT_BUCKET=EMPTY"
+            exit 30
+          fi
+
+          S3_KEY="${ARTIFACT_PREFIX}/${SOURCE_SHA}/${BUNDLE_NAME}"
+
+          aws s3 cp \
+            "${BUNDLE_PATH}" \
+            "s3://${ARTIFACT_BUCKET}/${S3_KEY}" \
+            --only-show-errors
+
+          aws s3api head-object \
+            --bucket "${ARTIFACT_BUCKET}" \
+            --key "${S3_KEY}" \
+            >/dev/null
+
+          echo "S3_ARTIFACT_KEY=${S3_KEY}"
+          echo "S3_ARTIFACT_PUSH=SUCCESS"
+        else
+          echo "S3_ARTIFACT_PUSH=SKIPPED"
+        fi
+      - echo "MARKETCONNECTOR_CODEBUILD=SUCCESS"
+
+artifacts:
+  files:
+    - ".devops/artifacts/*.zip"
+  discard-paths: yes

@@ -1,0 +1,80 @@
+name: MarketConnector CodeBuild
+
+on:
+  workflow_dispatch:
+    inputs:
+      push_artifact:
+        description: Upload the versioned ZIP bundle to S3
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  codebuild:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CODEBUILD_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - name: Start MarketConnector CodeBuild
+        shell: bash
+        env:
+          PROJECT_NAME: portfolio-marketconnector-build
+          PUSH_ARTIFACT: ${{ inputs.push_artifact }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          BUILD_ID="$(
+            aws codebuild start-build \
+              --project-name "${PROJECT_NAME}" \
+              --source-version "${SOURCE_SHA}" \
+              --environment-variables-override \
+                name=PUSH_ARTIFACT,value="${PUSH_ARTIFACT}",type=PLAINTEXT \
+              --query "build.id" \
+              --output text
+          )"
+
+          if [ -z "${BUILD_ID}" ] || [ "${BUILD_ID}" = "None" ]; then
+            echo "BUILD_ID=EMPTY"
+            exit 10
+          fi
+
+          echo "BUILD_ID=${BUILD_ID}"
+
+          while true; do
+            BUILD_STATUS="$(
+              aws codebuild batch-get-builds \
+                --ids "${BUILD_ID}" \
+                --query "builds[0].buildStatus" \
+                --output text
+            )"
+
+            echo "BUILD_STATUS=${BUILD_STATUS}"
+
+            case "${BUILD_STATUS}" in
+              SUCCEEDED)
+                echo "MARKETCONNECTOR_CODEBUILD_WORKFLOW=SUCCESS"
+                break
+                ;;
+              FAILED|FAULT|STOPPED|TIMED_OUT)
+                echo "MARKETCONNECTOR_CODEBUILD_WORKFLOW=FAILED"
+                exit 20
+                ;;
+              IN_PROGRESS)
+                sleep 10
+                ;;
+              *)
+                echo "UNKNOWN_BUILD_STATUS=${BUILD_STATUS}"
+                exit 30
+                ;;
+            esac
+          done
