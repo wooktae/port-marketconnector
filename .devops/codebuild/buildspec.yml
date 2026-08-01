@@ -61,6 +61,11 @@ phases:
   post_build:
     commands:
       - set -euo pipefail
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+          echo "MARKETCONNECTOR_CODEBUILD=FAILED_BEFORE_POST_BUILD"
+          exit 40
+        fi
       - echo "=== OPTIONAL S3 ARTIFACT PUSH ==="
       - |
         if [ "${PUSH_ARTIFACT}" = "true" ]; then

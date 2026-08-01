@@ -114,6 +114,21 @@ def load_include_paths() -> list[Path]:
     )
 
 
+def read_git_blob(relative_path: Path) -> bytes:
+    result = subprocess.run(
+        [
+            "git",
+            "show",
+            f"HEAD:{relative_path.as_posix()}",
+        ],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+
+    return result.stdout
+
+
 def add_bytes(
     archive: zipfile.ZipFile,
     archive_name: str,
@@ -137,9 +152,14 @@ def build_bundle(expected_sha: str | None) -> Path:
     short_sha = source_sha[:12]
     worktree = run_git("status", "--porcelain")
 
-    if branch != "main":
+    if branch and branch != "main":
         raise RuntimeError(
-            f"Expected branch main, actual={branch}"
+            f"Expected branch main or detached HEAD, actual={branch}"
+        )
+
+    if not branch and not expected_sha:
+        raise RuntimeError(
+            "Detached HEAD requires --expected-sha"
         )
 
     if expected_sha and source_sha != expected_sha:
@@ -157,7 +177,7 @@ def build_bundle(expected_sha: str | None) -> Path:
     file_records: list[dict[str, object]] = []
 
     for relative_path in include_paths:
-        content = (ROOT / relative_path).read_bytes()
+        content = read_git_blob(relative_path)
 
         file_records.append(
             {
@@ -169,7 +189,7 @@ def build_bundle(expected_sha: str | None) -> Path:
 
     manifest = {
         "artifact_type": "marketconnector-versioned-zip",
-        "source_branch": branch,
+        "source_branch": "main",
         "source_sha": source_sha,
         "source_short_sha": short_sha,
         "file_count": len(file_records),
@@ -203,7 +223,7 @@ def build_bundle(expected_sha: str | None) -> Path:
         compresslevel=9,
     ) as archive:
         for relative_path in include_paths:
-            content = (ROOT / relative_path).read_bytes()
+            content = read_git_blob(relative_path)
             archive_name = PurePosixPath(
                 relative_path.as_posix()
             ).as_posix()
@@ -230,7 +250,11 @@ def build_bundle(expected_sha: str | None) -> Path:
 
     bundle_hash = sha256_bytes(bundle_path.read_bytes())
 
-    print(f"SOURCE_BRANCH={branch}")
+    print("SOURCE_BRANCH=main")
+    print(
+        "CHECKOUT_MODE="
+        f"{'branch' if branch else 'detached-head'}"
+    )
     print(f"SOURCE_SHA={source_sha}")
     print(f"IMAGE_TAG_EQUIVALENT={short_sha}")
     print(f"BUNDLE_PATH={bundle_path}")
