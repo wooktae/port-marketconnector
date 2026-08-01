@@ -76,3 +76,10 @@ def test_daily_wrapper_is_included() -> None:
         "scripts/run_connector_balance_daily.sh"
         in load_entries()
     )
+
+def test_intraday_wrapper_is_included() -> None:
+    entries = load_entries()
+    assert (
+        "scripts/run_intraday_snapshot_and_evaluate.sh"
+        in entries
+    )
