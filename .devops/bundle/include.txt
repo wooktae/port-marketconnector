@@ -19,3 +19,9 @@ token_manager.py
 requirements.txt
 scripts/run_connector_balance_daily.sh
 scripts/run_intraday_snapshot_and_evaluate.sh
+appspec.yml
+codedeploy/application_stop.sh
+codedeploy/before_install.sh
+codedeploy/after_install.sh
+codedeploy/application_start.sh
+codedeploy/validate_service.sh

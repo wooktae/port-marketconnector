@@ -1,0 +1,33 @@
+version: 0.0
+os: linux
+
+files:
+  - source: /
+    destination: /home/ec2-user/apps/port-marketconnector/.codedeploy/staging
+    overwrite: true
+
+hooks:
+  ApplicationStop:
+    - location: codedeploy/application_stop.sh
+      timeout: 60
+      runas: root
+
+  BeforeInstall:
+    - location: codedeploy/before_install.sh
+      timeout: 120
+      runas: root
+
+  AfterInstall:
+    - location: codedeploy/after_install.sh
+      timeout: 180
+      runas: root
+
+  ApplicationStart:
+    - location: codedeploy/application_start.sh
+      timeout: 60
+      runas: root
+
+  ValidateService:
+    - location: codedeploy/validate_service.sh
+      timeout: 180
+      runas: root
