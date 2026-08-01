@@ -195,7 +195,7 @@ def fetch_and_save_balance():
     # AWS paper: legacy balance_summary write disabled
     # save_balance_summary_legacy(legacy_balance_record)
     upsert_connector_balance_snapshot(connector_balance_record)
-    print("✅ balance_summary + connector_balance_snapshot 저장 완료")
+    print("connector_balance_snapshot saved OK")
 
     legacy_holdings = []
     connector_positions = []
