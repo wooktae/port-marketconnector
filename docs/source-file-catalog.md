@@ -24,7 +24,7 @@ repository root 기준 상대 경로를 사용하며 cache, token 파일과 일�
 | `AGENTS.md` | MarketConnector 코드와 문서 작업 규칙 |
 | `README.md` | 현재 구조 · 실행 위험 · 운영 AS-IS |
 | `CHANGELOG.md` | 주요 변경 이력 |
-| `config.py` | KIS와 계좌 로컬 설정 |
+| `config.py` | KIS App Key·Secret·Base URL·Paper 계좌 환경변수 계약 |
 | `db_config.py` | PostgreSQL 환경변수 loader |
 | `connector_db.py` | DB repository helper |
 
@@ -35,7 +35,7 @@ repository root 기준 상대 경로를 사용하며 cache, token 파일과 일�
 | `AGENTS.md` | 주문 gate · 실행 제한 · 문서 갱신 규칙 |
 | `README.md` | 현재 entrypoint와 운영 구조 |
 | `CHANGELOG.md` | 실제 Connector 변경만 기록 |
-| `config.py` | 민감정보 · paper/live 환경 구분 |
+| `config.py` | 민감정보 하드코딩 금지 · Runtime 주입 대상 · 배포 후 권한 600 |
 | `db_config.py` | `INTEREST_DB_*`와 password 기본값 |
 | `connector_db.py` | schema · SQL · transaction · mapping |
 
@@ -107,7 +107,8 @@ repository root 기준 상대 경로를 사용하며 cache, token 파일과 일�
 | --- | --- |
 | `connector_balance.py` | Daily 잔고와 포지션 Snapshot |
 | `connector_intraday_snapshot_refresh.py` | Intraday Snapshot Refresh |
-| `scripts/run_connector_balance_daily.sh` | Daily 잔고 실행 wrapper |
+| `scripts/run_connector_balance_daily.sh` | Daily 잔고 실행 wrapper · Bundle·CodeDeploy 배포 대상 |
+| `scripts/run_intraday_snapshot_and_evaluate.sh` | Snapshot Refresh 이후 Position Evaluate 순차 실행 Intraday wrapper |
 
 ### 주요 저장 대상
 
@@ -287,6 +288,51 @@ approval gate를 우회하는 기본값이나 자동 실행 fallback을 추가�
 | Intraday Scheduler | `portfolio-paper-intraday-snapshot-evaluate-10min-kst` |
 
 실제 ARN, instance id, command id, account-id와 endpoint는 기록하지 않는다.
+
+## DevOps와 배포
+
+### Root 배포 파일
+
+| 파일 | 역할 |
+| --- | --- |
+| `appspec.yml` | CodeDeploy EC2 In-place 배포와 Lifecycle Hook 연결 |
+| `requirements.txt` | EC2 Runtime Dependency 기준 |
+| `.github/workflows/marketconnector-codebuild.yml` | GitHub Actions에서 MarketConnector CodeBuild 실행 |
+
+### Bundle
+
+| 파일 | 역할 |
+| --- | --- |
+| `.devops/bundle/include.txt` | Versioned ZIP에 포함할 배포 파일 Manifest |
+| `.devops/scripts/build_bundle.py` | committed Git blob 기반 Versioned ZIP과 Manifest 생성 |
+| `.devops/codebuild/buildspec.yml` | Compile · Test · Ruff · Bundle · S3 업로드 Phase |
+| `.devops/scripts/compile_check.py` | 안전한 Python Compile 검사 |
+
+`.devops/artifacts` 산출물과 일회성 Artifact는 카탈로그에 나열하지 않는다.
+
+### CodeDeploy Hook
+
+`appspec.yml`이 참조하는 상대 경로 기준이다.
+
+| 파일 | 역할 |
+| --- | --- |
+| `codedeploy/application_stop.sh` | 실행 프로세스와 배포 안전 상태 확인 |
+| `codedeploy/before_install.sh` | Deployment Lock과 기존 Source Backup |
+| `codedeploy/after_install.sh` | Bundle 설치 · 권한 적용 · Runtime 파일 보존 |
+| `codedeploy/application_start.sh` | 자동 시작 없이 안전 상태 유지 |
+| `codedeploy/validate_service.sh` | Compile · Wrapper Syntax · 필수 파일 · 단일 실행 · Lock 해제 검증 |
+
+### 변경 시 확인
+
+| 항목 | 값 |
+| --- | --- |
+| Bundle Include 변경 | Contract Test 갱신 |
+| Hook 변경 | `appspec.yml` 참조 정합성 확인 |
+| Shell 변경 | LF와 `bash -n` 확인 |
+| Runtime 파일 | Bundle 미포함 확인 |
+| Source·Bundle | Source SHA와 Bundle Version 정합성 확인 |
+| Hook 실행 | Connector·주문 자동 실행 없음 확인 |
+| Rollback | token 파일 보존 확인 |
 
 ## Tests
 

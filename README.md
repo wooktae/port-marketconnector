@@ -17,6 +17,18 @@
 | Intraday | Scheduler 기반 Snapshot Refresh · hard stop 판단 |
 | broker 주문 | 승인된 경로에서만 제출 |
 | View API | port-view 조회 연동 |
+| CI | GitHub Actions → CodeBuild |
+| 배포 Artifact | Git SHA 기반 Versioned ZIP Bundle |
+| Artifact 저장소 | Versioning 활성 Private S3 |
+| 배포 방식 | CodeDeploy EC2 In-place |
+| 배포 대상 | 기존 MarketConnector EC2 Application 경로 |
+| 배포 안전 | Deployment Lock · Connector 단일 실행 Guard |
+| Rollback | 배포 전 Backup Source 복원 |
+| 재배포 | 검증된 동일 S3 Versioned Revision |
+| Application 시작 | 배포 중 자동 시작 없음 |
+| Runtime token | 배포·Rollback에서 보존 |
+| 주문 검증 | 실제 주문 없이 정적·무주문 Smoke Test |
+| Secret | 환경변수와 AWS Runtime 주입 |
 | aws-live BUY/SELL | 🔴 미진행 |
 | 문서 기본 원칙 | token · 주문 · DB 실행 없이 정적 확인 |
 
@@ -34,6 +46,11 @@
 | Broker | KIS 국내 주식 API |
 | Compute | EC2 |
 | Remote Execution | SSM RunCommand |
+| CI Trigger | GitHub Actions |
+| Build | CodeBuild |
+| Artifact | Versioned ZIP Bundle |
+| Artifact Store | Amazon S3 |
+| Deploy | AWS CodeDeploy |
 
 ## 책임 경계
 
@@ -70,7 +87,7 @@
 | --- | --- |
 | `connector_app.py` | Flask 실행 API와 View API |
 | `token_manager.py` | token 파일 · 발급 · 갱신 |
-| `config.py` | KIS와 계좌 로컬 설정 |
+| `config.py` | KIS와 Paper 계좌 환경변수 계약 설정 모듈 |
 | `db_config.py` | DB 환경변수 loader |
 | `connector_db.py` | connector · execution · legacy repository helper |
 | `connector_view_service.py` | View API 응답 조립 |
@@ -87,6 +104,8 @@
 | `connector_intraday_snapshot_refresh.py` | 장중 Snapshot Refresh |
 | `connector_intraday_position_evaluate.py` | 장중 hard stop 판단 |
 | `scripts/run_connector_balance_daily.sh` | Daily 잔고 Snapshot wrapper |
+| `scripts/run_intraday_snapshot_and_evaluate.sh` | Intraday Snapshot Refresh → Position Evaluate wrapper |
+| `appspec.yml` | CodeDeploy In-place 배포와 Lifecycle Hook 연결 |
 | `docs/source-file-catalog.md` | 주요 파일과 책임 |
 
 상세 역할은 [소스 파일 카탈로그](docs/source-file-catalog.md)를 참고한다.
@@ -315,6 +334,69 @@ MarketConnector는 EC2에서 SSM RunCommand로 실행되는 구조다.
 
 실제 ARN, instance id, command id, account-id와 public IP는 문서에 기록하지 않는다.
 
+## DevOps 배포 구조
+
+배포는 committed Git 상태를 기준으로 Artifact를 만들고 CodeDeploy로 EC2에 In-place 반영한다.
+
+```
+Git Commit → GitHub Actions → CodeBuild → Git SHA ZIP Bundle → S3 Versioned Artifact → CodeDeploy → EC2 In-place
+```
+
+| 항목 | 값 |
+| --- | --- |
+| Bundle 기준 | committed Git blob |
+| 제외 대상 | Working Tree 상태 · 줄바꿈 변환 의존 |
+| 결정성 | Main과 Detached Head에서 동일 Bundle |
+| Bundle 포함 목록 | `.devops/bundle/include.txt` |
+| Bundle 생성기 | `.devops/scripts/build_bundle.py` |
+| S3 Artifact | Source 전체 SHA Versioned Key |
+| Hook 책임 | Backup · 설치 · 권한 · Lock · 검증 |
+| Application 실행 | CodeDeploy가 자동 실행하지 않음 |
+| 실제 실행 경로 | 기존 SSM · Scheduler 운영 |
+
+### Lifecycle Hook
+
+| Hook | 역할 |
+| --- | --- |
+| ApplicationStop | 실행 프로세스와 배포 안전 상태 확인 |
+| BeforeInstall | Deployment Lock과 기존 Source Backup |
+| AfterInstall | Bundle 설치 · 권한 적용 · Runtime 파일 보존 |
+| ApplicationStart | 자동 시작 없이 안전 상태 유지 |
+| ValidateService | Compile · Wrapper Syntax · 필수 파일 · 단일 실행 · Lock 해제 검증 |
+
+Hook Script 내부 구현은 `codedeploy/` 파일에서 관리하며 문서에 장문으로 복사하지 않는다.
+
+### Rollback
+
+| 항목 | 값 |
+| --- | --- |
+| CodeDeploy 실패 | Auto Rollback |
+| 운영 검증용 | 배포 전 Backup Source 복원 |
+| 재배포 | 검증된 동일 S3 Versioned Revision |
+| Runtime token | Rollback·재배포 중 보존 |
+| Application·주문 | Rollback·재배포 중 미실행 |
+
+## 검증 결과
+
+2026-08-01 기준 DevOps 완료 검증 결과다.
+
+| 항목 | 결과 |
+| --- | --- |
+| Python Compile | 25개 성공 |
+| Pytest | 21개 성공 |
+| Ruff | 성공 |
+| Bundle 파일 | 28개 확인 |
+| Bundle 금지 파일 | 0개 |
+| Lifecycle Hook | 전체 성공 |
+| 첫 In-place 배포 | 성공 |
+| Backup Rollback | 성공 |
+| 동일 Revision 재배포 | 성공 |
+| Runtime token 보존 | 성공 |
+| Connector 프로세스 | 0개 |
+| 주문 API 호출 | 0건 |
+
+Deployment ID, SSM Command ID, S3 Version ID와 전체 SHA-256 원문은 기록하지 않는다.
+
 ## Database
 
 ### 연결 기준
@@ -388,14 +470,17 @@ pip install flask requests psycopg
 
 ### KIS 설정
 
+`config.py`는 KIS와 Paper 계좌 값을 환경변수 계약으로 읽는다. App Key, Secret과 계좌번호를 하드코딩하지 않는다.
+
 | 항목 | 처리 |
 | --- | --- |
-| App key | `[REDACTED]` |
-| App secret | `[REDACTED]` |
+| App key | 환경변수 · AWS Runtime 주입 |
+| App secret | 환경변수 · AWS Runtime 주입 |
 | Base URL | 환경별 설정 |
-| 계좌번호 | `[REDACTED_ACCOUNT_NO]` |
-| 상품 코드 | `[REDACTED]` |
-| Token | local file 또는 외부 관리 |
+| 계좌번호 | 환경변수 주입 |
+| 상품 코드 | 환경변수 주입 |
+| Token | Runtime 파일 · Bundle 제외 · 배포 시 보존 |
+| 배포 후 권한 | `config.py` 600 |
 
 `config.py`, token 파일과 local secret 값을 문서에 옮기지 않는다.
 

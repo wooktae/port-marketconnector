@@ -479,6 +479,86 @@ IAM Role, policy와 Scheduler 이름은 운영 식별 정보이며 변경 시 cr
 
 실제 SSM RunCommand는 사용자 명시 요청 없이 발행하지 않는다.
 
+### 8.3 DevOps Artifact 기준
+
+- 배포 Artifact는 Git SHA 기반 Versioned ZIP이다.
+- Bundle Source는 committed Git blob이다.
+- Working Tree 파일을 직접 ZIP으로 묶지 않는다.
+- Detached Head에서도 resolved Source SHA를 기준으로 한다.
+- Bundle 포함 목록은 `.devops/bundle/include.txt`에서 관리한다.
+- Bundle 생성기는 `.devops/scripts/build_bundle.py`다.
+- 신규 운영 파일은 include manifest와 contract test를 함께 갱신한다.
+- token, secret, cache, runtime 파일과 build output은 Bundle에 넣지 않는다.
+- Local Bundle과 S3 Artifact의 SHA-256 정합성을 검증한다.
+
+### 8.4 CodeDeploy 안전 기준
+
+- EC2 In-place 배포는 CodeDeploy Lifecycle Hook을 통해서만 수행한다.
+- 운영 Application 경로를 수동 복사로 덮어쓰지 않는다.
+- 배포 전 기존 Source Backup을 생성한다.
+- 배포 중 Deployment Lock을 유지한다.
+- Connector 실행 프로세스가 존재하면 안전 기준에 따라 배포를 차단한다.
+- 중복 Connector 프로세스를 허용하지 않는다.
+- ApplicationStart에서 Connector를 자동 실행하지 않는다.
+- ValidateService 성공 전 Deployment Lock을 해제하지 않는다.
+- 실패 시 신규 Application 프로세스를 기동하지 않는다.
+- 배포 검증을 위해 Flask 실행 API나 주문 entrypoint를 호출하지 않는다.
+
+### 8.5 Runtime과 Secret 보호 기준
+
+- `config.py`에는 KIS App Key, Secret과 계좌번호를 하드코딩하지 않는다.
+- Runtime 환경은 환경변수와 AWS Secret 주입 구조를 사용한다.
+- Runtime token 파일은 Bundle에 포함하지 않는다.
+- 배포, Rollback과 재배포 중 기존 token 파일을 보존한다.
+- `config.py`는 배포 후 권한 600을 유지한다.
+- Secret 값은 Build, Hook, SSM과 검증 출력에 기록하지 않는다.
+- Secret Rotation은 별도 명시적 작업 범위이며 이번 완료 기준에 포함하지 않는다.
+
+### 8.6 Wrapper 기준
+
+- Daily Wrapper는 `scripts/run_connector_balance_daily.sh`다.
+- Intraday Wrapper는 `scripts/run_intraday_snapshot_and_evaluate.sh`다.
+- Intraday 순서는 Snapshot Refresh → Position Evaluate다.
+- Wrapper는 Strict Shell 설정을 유지한다.
+- Shell 파일은 LF로 관리한다.
+- 배포 검증에서는 `bash -n`과 구조 검증을 우선한다.
+- 명시적 운영 실행 요청 없이 Wrapper를 실제 실행하지 않는다.
+
+### 8.7 Rollback 기준
+
+- 직전 성공 상태는 배포 전 Backup과 S3 Versioned Artifact로 식별한다.
+- Backup Rollback은 Deployment Lock과 프로세스 0개 상태에서 수행한다.
+- 복원 후 주요 Source SHA-256, Python Compile과 Wrapper Syntax를 확인한다.
+- 검증된 동일 S3 Revision을 재배포할 수 있어야 한다.
+- Rollback과 재배포 중 token, secret과 runtime 파일을 보존한다.
+- Rollback 검증에서도 주문 API를 호출하지 않는다.
+
+### 8.8 안전한 검증 범위
+
+허용:
+
+- Python Compile
+- Ruff
+- Mock 기반 Pytest
+- Bundle Contract Test
+- ZIP 구조 검사
+- Shell Syntax 검사
+- 파일 존재와 권한 확인
+- SHA-256 정합성 확인
+- CodeDeploy Hook 상태 확인
+- Connector 프로세스 수 확인
+- Deployment Lock 상태 확인
+
+명시적 승인 없이 금지:
+
+- Flask 주문 API 호출
+- BUY, SELL, 취소와 정정 실행
+- `connector_strategy_order_execute.py --execute`
+- Daily Balance Wrapper 실제 운영 실행
+- Intraday Wrapper 실제 운영 실행
+- token 신규 발급과 강제 Rotation
+- 운영 DB 쓰기를 동반하는 Smoke Test
+
 ## 9. 실행 제한
 
 사용자가 명시적으로 요청하지 않는 한 아래 작업을 수행하지 않는다.

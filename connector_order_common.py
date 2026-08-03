@@ -723,9 +723,23 @@ def submit_rvsecncl_order(
         effective_price = order_price if order_price is not None else active_order.get("order_price")
         ord_dvsn, ord_unpr, normalized_method = normalize_order_method(effective_method, effective_price)
 
-    request_qty = int(qty) if qty is not None else int(active_order.get("order_qty") or 0)
-    if request_qty <= 0:
-        raise ValueError("qty는 1 이상이어야 해")
+    # KIS 정정·취소 계약:
+    # - 전량 취소: ORD_QTY=0, QTY_ALL_ORD_YN=Y
+    # - 부분 취소: ORD_QTY=취소 수량, QTY_ALL_ORD_YN=N
+    #
+    # MODIFY는 기존처럼 대상 수량을 명시한다.
+    if action_type == "CANCEL" and qty is None:
+        request_qty = 0
+        qty_all_order_yn = "Y"
+    else:
+        request_qty = int(qty) if qty is not None else int(active_order.get("order_qty") or 0)
+        qty_all_order_yn = "N"
+
+    if action_type == "CANCEL":
+        if qty is not None and request_qty <= 0:
+            raise ValueError("부분 취소 qty는 1 이상이어야 해")
+    elif request_qty <= 0:
+        raise ValueError("MODIFY qty는 1 이상이어야 해")
 
     request_payload = {
         "CANO": PAPER_ACNT,
@@ -736,7 +750,7 @@ def submit_rvsecncl_order(
         "RVSE_CNCL_DVSN_CD": rvse_cncl_dvsn_cd,
         "ORD_QTY": str(request_qty),
         "ORD_UNPR": ord_unpr,
-        "QTY_ALL_ORD_YN": "Y" if qty is None else "N",
+        "QTY_ALL_ORD_YN": qty_all_order_yn,
     }
 
     account_id = ensure_connector_account(
