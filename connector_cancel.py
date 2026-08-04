@@ -2,6 +2,15 @@
 
 원 주문 요청 ID를 기준으로 broker 주문 context를 찾아 취소 요청을 제출한다.
 CLI 실행 시 외부 주문 취소 API 호출과 DB 상태 갱신이 발생할 수 있다.
+
+수량 계약:
+- 수량 생략(--qty 미지정)은 전량 취소로 처리한다(ORD_QTY="0", QTY_ALL_ORD_YN="Y").
+- 수량 지정은 해당 수량만 부분 취소로 처리한다(QTY_ALL_ORD_YN="N").
+- 실제 수량 분기와 payload 계약은 submit_rvsecncl_order()가 호출하는
+  resolve_cancel_modify_quantity() 순수 함수가 담당한다.
+
+전량 취소는 현재 TR_ID와 취소 구분 코드 RVSE_CNCL_DVSN_CD로 Paper 환경에서
+동작 확인된 값이다. 실 환경(live) 검증 주장으로 확장하지 않는다.
 """
 
 import argparse
@@ -12,10 +21,11 @@ from connector_order_common import submit_rvsecncl_order
 SOURCE_VERSION = "connector-order-cancel-1.0.0"
 API_NAME = "order-cancel"
 
-# 중요:
-# 아래 2개는 네 KIS 문서 기준으로 확인 필요
+# 전량 취소 payload 계약:
+#   TR_ID와 RVSE_CNCL_DVSN_CD는 Paper 환경에서 전량 취소 동작이 확인된 값이다.
+#   실 환경(live) 검증 주장으로 확장하지 않으며, 실 환경 적용 전 KIS 문서로 재확인한다.
 TR_ID = "VTTC0803U"
-RVSE_CNCL_DVSN_CD = "02"   # 일반적으로 취소 코드로 많이 쓰는 값. 환경 문서 확인 필요
+RVSE_CNCL_DVSN_CD = "02"   # 취소 구분 코드. Paper 환경 동작 확인 기준
 
 
 def cancel_order(
@@ -23,7 +33,10 @@ def cancel_order(
     qty: Optional[int] = None,
     reason: Optional[str] = None,
 ):
-    """원 주문 요청 ID 기준으로 취소 주문을 제출한다."""
+    """원 주문 요청 ID 기준으로 취소 주문을 제출한다.
+
+    qty를 생략하면 전량 취소, qty를 지정하면 부분 취소로 처리한다.
+    """
     return submit_rvsecncl_order(
         action_type="CANCEL",
         api_name=API_NAME,
@@ -38,9 +51,16 @@ def cancel_order(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="KIS 주문 취소")
+    parser = argparse.ArgumentParser(
+        description="KIS 주문 취소 (수량 생략 시 전량 취소, 수량 지정 시 부분 취소)"
+    )
     parser.add_argument("--order-request-id", type=int, required=True, help="원 주문 request id")
-    parser.add_argument("--qty", type=int, default=None, help="취소 수량. 생략 시 전량")
+    parser.add_argument(
+        "--qty",
+        type=int,
+        default=None,
+        help="취소 수량. 생략 시 전량 취소, 지정 시 부분 취소",
+    )
     parser.add_argument("--reason", default=None, help="취소 사유")
     parser.add_argument("--yes", action="store_true", help="실제 취소 실행 확인")
 

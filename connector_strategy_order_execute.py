@@ -16,11 +16,17 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from psycopg.rows import dict_row
 
 from connector_db import get_conn
+from connector_order_common import (
+    check_fatal_max_order_qty,
+    normalize_order_qty,
+    resolve_fatal_max_order_qty,
+)
 
 
 DEFAULT_LIMIT = 20
 EXECUTION_MODE = "PAPER_STRATEGY"
 REQUESTED_STATUS = "REQUESTED"
+SUBMITTING_STATUS = "SUBMITTING"
 SUBMITTED_STATUS = "SUBMITTED"
 FAILED_STATUS = "FAILED"
 RETRYABLE_REJECTION_CODES = ("40580000", "EGW00201")
@@ -384,6 +390,46 @@ def normalize_retryable_rejected_orders(
 
     return recovered
 
+def claim_strategy_execution_order(
+    execution_order_id: int,
+) -> Optional[Dict[str, Any]]:
+    """Atomically claim a REQUESTED execution order for broker submission.
+
+    Runs a single conditional UPDATE that transitions execution_status from
+    REQUESTED to SUBMITTING only when the row id matches, the current
+    execution_status is REQUESTED, and connector_order_request_id IS NULL. This
+    matches the fetch_requested_strategy_orders selection so a claimed row is
+    interchangeable with a fetched order downstream.
+
+    Returns the claimed row (same column shape as
+    fetch_requested_strategy_orders) when exactly one row is updated. Returns
+    None when zero rows are updated, leaving execution_status unchanged (for
+    example when the order was already claimed or already has a connector
+    request). Concurrent claims of the same order resolve to a single winner
+    because the conditional UPDATE is atomic; losing claims observe zero rows.
+    """
+    table_ref, columns = _table_info("strategy_execution_order")
+    select_exprs, _ = _select_exprs(columns)
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"""
+                UPDATE {table_ref}
+                   SET execution_status = %s,
+                       updated_at = now()
+                 WHERE id = %s
+                   AND execution_status = %s
+                   AND connector_order_request_id IS NULL
+                 RETURNING
+                    {select_exprs}
+                """,
+                (SUBMITTING_STATUS, execution_order_id, REQUESTED_STATUS),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return dict(row) if row else None
+
+
 def mark_strategy_execution_order_submitted(
     execution_order_id: int,
     connector_order_request_id: int,
@@ -400,8 +446,7 @@ def mark_strategy_execution_order_submitted(
                        result_payload = %s::jsonb,
                        updated_at = now()
                  WHERE id = %s
-                   AND execution_status = 'REQUESTED'
-                   AND connector_order_request_id IS NULL
+                   AND execution_status = 'SUBMITTING'
                  RETURNING id, execution_status, connector_order_request_id
                 """,
                 (
@@ -431,6 +476,7 @@ def mark_strategy_execution_order_failed(
                        result_payload = %s::jsonb,
                        updated_at = now()
                  WHERE id = %s
+                   AND execution_status NOT IN ('SUBMITTED','FILLED','CANCELED','REJECTED','FAILED')
                  RETURNING id, execution_status, connector_order_request_id
                 """,
                 (
@@ -708,9 +754,30 @@ def run(args: argparse.Namespace) -> int:
     mode = "EXECUTE" if args.execute else "DRY_RUN"
     print(f"[{mode}] REQUESTED strategy order count={len(orders)}")
 
+    # Resolve the Fatal_Max emergency cap once for this strategy-order path.
+    # A misconfigured STEP12_FATAL_MAX_ORDER_QTY is an explicit configuration
+    # error that must not be silently ignored (Requirements 3.10, 3.12); it
+    # surfaces here for both dry-run and execute modes before any order is
+    # processed. This enforcement is wired only into this strategy-order path
+    # and is intentionally not applied to submit_cash_order().
+    fatal_max_limit = resolve_fatal_max_order_qty()
+
     if not args.execute:
+        # Dry_Run performs only the pure quantity normalization + Fatal Max
+        # validation (steps 1-2). It never claims an order and never changes
+        # execution_status in the DB (Requirement 2.12).
         for order in orders:
             _print_order("[ORDER]", order)
+            try:
+                _validate_order_for_execute(order)
+                normalized_qty = normalize_order_qty(order.get("order_qty"))
+                check_fatal_max_order_qty(normalized_qty, fatal_max_limit)
+            except ValueError as exc:
+                print(
+                    "[DRY_RUN_INVALID] "
+                    f"execution_order_id={order.get('id')}, "
+                    f"reason={exc}, error_type={type(exc).__name__}"
+                )
         return 0
 
     for index, order in enumerate(orders):
@@ -720,8 +787,50 @@ def run(args: argparse.Namespace) -> int:
         _print_order("[ORDER]", order)
         execution_order_id = order["id"]
 
+        # Step 1-2: quantity normalization + Fatal Max check before any broker
+        # call. On validation failure the broker is not called; the order is
+        # recorded as a unit failure and the batch continues with the remaining
+        # orders (Requirements 2.6, 3.13, 3.14). QuantityValidationError and
+        # FatalMaxExceededError are ValueError subclasses, as is the
+        # _validate_order_for_execute contract check, so quantity validation
+        # errors are always returned before the Fatal Max check.
         try:
             _validate_order_for_execute(order)
+            normalized_qty = normalize_order_qty(order.get("order_qty"))
+            check_fatal_max_order_qty(normalized_qty, fatal_max_limit)
+        except ValueError as exc:
+            mark_strategy_execution_order_failed(
+                execution_order_id=execution_order_id,
+                result_payload={
+                    **_order_payload(order),
+                    "reason": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            print(f"[FAILED] execution_order_id={execution_order_id}, reason={exc}")
+            continue
+
+        try:
+            # Step 3: Claim before broker submission. A Claim DB error is
+            # handled by the except block below: the broker is not called and
+            # the order is recorded as a unit failure (Requirement 2.13).
+            claimed = claim_strategy_execution_order(execution_order_id)
+
+            # Step 4: Claim matched zero rows -> duplicate-submission block
+            # (skip). Leave execution_status unchanged and continue the batch
+            # (Requirements 2.5, 2.6).
+            if not claimed:
+                print(
+                    "[SKIP_DUPLICATE] "
+                    f"execution_order_id={execution_order_id}, "
+                    "reason=claim matched zero rows "
+                    "(already claimed or not REQUESTED)"
+                )
+                continue
+
+            # Step 6: Claim matched exactly one row -> submit to broker once,
+            # then transition SUBMITTING -> SUBMITTED on success or -> FAILED
+            # on failure.
             result, submit_attempts = _submit_order_with_rate_limit_retry(
                 order,
                 retry_count=args.rate_limit_retry_count,
@@ -738,12 +847,55 @@ def run(args: argparse.Namespace) -> int:
             }
 
             if _is_successful_result(result):
-                mark_strategy_execution_order_submitted(
-                    execution_order_id=execution_order_id,
-                    connector_order_request_id=connector_order_request_id,
-                    result_payload=result_payload,
-                )
+                broker_order_no = result.get("broker_order_no")
 
+                # Step 7a: broker already succeeded. Transition SUBMITTING ->
+                # SUBMITTED and confirm the actual updated row before treating
+                # submission as complete. The broker response is preserved so an
+                # operator can reconcile the order.
+                #
+                # A local-state sync failure here (either a DB exception or a
+                # missing updated row) must NOT be re-processed as a normal,
+                # retryable broker FAILED: the broker may have already accepted
+                # the order. So mark_strategy_execution_order_failed() is not
+                # called, SELL_ORDERED follow-up is not performed, and the
+                # [SUBMITTED] success log is not printed. A distinct
+                # SUBMITTED_STATE_SYNC_FAILED log is emitted with the ids needed
+                # for reconciliation, and the batch continues with the next
+                # order. The existing SUBMITTING state and the created
+                # connector_order_request_id are left intact so no automatic
+                # re-submission is triggered.
+                try:
+                    submitted_row = mark_strategy_execution_order_submitted(
+                        execution_order_id=execution_order_id,
+                        connector_order_request_id=connector_order_request_id,
+                        result_payload=result_payload,
+                    )
+                except Exception as sync_exc:
+                    print(
+                        "[SUBMITTED_STATE_SYNC_FAILED] "
+                        f"error=SUBMITTED_STATE_SYNC_FAILED, "
+                        f"execution_order_id={execution_order_id}, "
+                        f"connector_order_request_id={connector_order_request_id}, "
+                        f"broker_order_no={broker_order_no}, "
+                        f"reason={sync_exc}, error_type={type(sync_exc).__name__}"
+                    )
+                    continue
+
+                if not submitted_row:
+                    print(
+                        "[SUBMITTED_STATE_SYNC_FAILED] "
+                        f"error=SUBMITTED_STATE_SYNC_FAILED, "
+                        f"execution_order_id={execution_order_id}, "
+                        f"connector_order_request_id={connector_order_request_id}, "
+                        f"broker_order_no={broker_order_no}, "
+                        "reason=mark_strategy_execution_order_submitted returned "
+                        "no updated row"
+                    )
+                    continue
+
+                # Step 7b: SUBMITTED row confirmed. Only now run the SELL
+                # position follow-up and emit the [SUBMITTED] success log.
                 if (
                     order.get("action_type") == "SELL"
                     and order.get("source_position_state_id") is not None
@@ -756,7 +908,7 @@ def run(args: argparse.Namespace) -> int:
                     "[SUBMITTED] "
                     f"execution_order_id={execution_order_id}, "
                     f"connector_order_request_id={connector_order_request_id}, "
-                    f"broker_order_no={result.get('broker_order_no')}"
+                    f"broker_order_no={broker_order_no}"
                 )
             else:
                 mark_strategy_execution_order_failed(
@@ -773,15 +925,35 @@ def run(args: argparse.Namespace) -> int:
                     "reason=order result rejected or missing broker response"
                 )
         except Exception as exc:
-            mark_strategy_execution_order_failed(
-                execution_order_id=execution_order_id,
-                result_payload={
-                    **_order_payload(order),
-                    "reason": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-            print(f"[FAILED] execution_order_id={execution_order_id}, reason={exc}")
+            # A Claim (or other pre-submission) error is recorded as a unit
+            # failure. The failed-status write itself can also fail if the DB
+            # outage persists; that second error must NOT propagate out of
+            # run() and abort the whole batch (Requirement: double-fault
+            # protection). It is wrapped in its own try/except so the batch
+            # continues with the remaining orders. The order was not submitted
+            # to the broker on this path.
+            try:
+                mark_strategy_execution_order_failed(
+                    execution_order_id=execution_order_id,
+                    result_payload={
+                        **_order_payload(order),
+                        "reason": str(exc),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                print(
+                    f"[FAILED] execution_order_id={execution_order_id}, reason={exc}"
+                )
+            except Exception as status_exc:
+                print(
+                    "[CLAIM_FAILED_STATUS_WRITE_FAILED] "
+                    f"error=CLAIM_FAILED_STATUS_WRITE_FAILED, "
+                    f"execution_order_id={execution_order_id}, "
+                    f"claim_error={exc}, "
+                    f"claim_error_type={type(exc).__name__}, "
+                    f"status_write_error={status_exc}, "
+                    f"status_write_error_type={type(status_exc).__name__}"
+                )
 
     return 0
 

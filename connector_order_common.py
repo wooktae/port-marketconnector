@@ -4,9 +4,11 @@
 호출 시 token 처리, 외부 주문 API 호출, DB 쓰기가 발생할 수 있다.
 """
 
+import os
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 import requests
 from psycopg.rows import dict_row
@@ -26,6 +28,231 @@ from token_manager import check_and_refresh_token, get_access_token
 
 DEFAULT_ORDER_ENDPOINT = "/uapi/domestic-stock/v1/trading/order-cash"
 DEFAULT_RVSE_CNCL_ENDPOINT = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
+
+
+class QuantityValidationError(ValueError):
+    """주문 수량이 1 이상의 정수로 안전하게 정규화될 수 없을 때 발생한다."""
+
+
+def normalize_order_qty(value: Any) -> int:
+    """주문 수량을 1 이상의 양의 정수로 정규화한다.
+
+    브로커 제출 경계에서 명백히 잘못된 수량을 차단하기 위한 순수 함수다.
+    broker API 호출, DB 쓰기, token 처리 같은 부작용을 수행하지 않는다.
+
+    허용:
+        - 1 이상의 양의 정수(`int`)는 값 변경 없이 그대로 반환한다.
+        - 정수와 정확히 동일한 `Decimal`·문자열은 정수로 변환해 허용한다.
+
+    거부(`QuantityValidationError`):
+        - 0, 음수.
+        - 소수부가 있는 값(절사·반올림·축소하지 않는다).
+        - `bool` 값(`bool`은 `int` 하위 타입이므로 정수 판정 이전에 먼저 거부한다).
+        - 숫자로 해석할 수 없는 값.
+    """
+    # bool은 int 하위 타입이므로 정수 판정 이전에 먼저 거부한다.
+    if type(value) is bool:
+        raise QuantityValidationError(f"수량으로 bool 값은 허용하지 않아: {value!r}")
+
+    if isinstance(value, int):
+        qty = value
+    elif isinstance(value, Decimal):
+        if not value.is_finite():
+            raise QuantityValidationError(f"수량이 유한한 값이 아니야: {value!r}")
+        if value != value.to_integral_value():
+            raise QuantityValidationError(f"수량에 소수부가 있어 정수로 정규화할 수 없어: {value!r}")
+        qty = int(value)
+    elif isinstance(value, float):
+        # float는 정확한 정수 표현을 보장하지 못하므로 정수값일 때만 허용한다.
+        if not value.is_integer():
+            raise QuantityValidationError(f"수량에 소수부가 있어 정수로 정규화할 수 없어: {value!r}")
+        qty = int(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        try:
+            parsed = Decimal(text)
+        except (InvalidOperation, ValueError):
+            raise QuantityValidationError(f"수량을 숫자로 해석할 수 없어: {value!r}") from None
+        if not parsed.is_finite():
+            raise QuantityValidationError(f"수량이 유한한 값이 아니야: {value!r}")
+        if parsed != parsed.to_integral_value():
+            raise QuantityValidationError(f"수량에 소수부가 있어 정수로 정규화할 수 없어: {value!r}")
+        qty = int(parsed)
+    else:
+        raise QuantityValidationError(f"수량을 숫자로 해석할 수 없어: {value!r}")
+
+    if qty < 1:
+        raise QuantityValidationError(f"수량은 1 이상이어야 해: {qty}")
+
+    return qty
+
+
+# Fatal_Max 비상 상한 환경변수. 전략 상한이 아니라 데이터 손상 방지용 비상 상한이다.
+FATAL_MAX_ORDER_QTY_ENV = "STEP12_FATAL_MAX_ORDER_QTY"
+
+
+class FatalMaxConfigError(Exception):
+    """`STEP12_FATAL_MAX_ORDER_QTY` 구성값을 양의 정수 상한으로 해석할 수 없을 때 발생한다.
+
+    미설정과 `0`(비활성)을 제외하고 음수·소수·비숫자처럼 양의 정수로 해석 불가한 값을
+    조용히 무시하거나 검사를 비활성화하지 않고, 명시적 구성 오류로 신호하기 위한 예외다.
+    `QuantityValidationError`와 별도 계열로 두어 수량 검증 오류와 구분한다.
+    """
+
+
+class FatalMaxExceededError(ValueError):
+    """정규화된 주문 수량이 Fatal_Max 상한을 초과할 때 발생한다.
+
+    상한 초과 수량을 상한으로 조정하지 않고 브로커 제출을 차단하기 위한 예외다.
+    """
+
+
+def resolve_fatal_max_order_qty() -> Optional[int]:
+    """`STEP12_FATAL_MAX_ORDER_QTY` 환경변수를 Fatal_Max 상한으로 해석한다.
+
+    이 함수는 호출 시점에만 환경변수를 읽는다. module import 시점에는 환경변수를
+    읽지 않으므로 import-time 부작용이 없다. broker API 호출·DB 쓰기·token 처리도
+    수행하지 않는다.
+
+    반환:
+        - 미설정(또는 빈 문자열)이면 검사 비활성으로 보고 `None`을 반환한다.
+        - 값이 `0`이면 검사 비활성으로 보고 `None`을 반환한다.
+        - 양의 정수이면 그 값을 상한으로 반환한다.
+
+    예외(`FatalMaxConfigError`):
+        - 미설정·`0`을 제외하고 양의 정수로 해석할 수 없는 값(음수·소수·비숫자).
+    """
+    raw = os.environ.get(FATAL_MAX_ORDER_QTY_ENV)
+    if raw is None:
+        return None
+
+    text = raw.strip()
+    if text == "":
+        # 빈 문자열은 미설정과 동일하게 검사 비활성으로 취급한다.
+        return None
+
+    try:
+        parsed = Decimal(text)
+    except (InvalidOperation, ValueError):
+        raise FatalMaxConfigError(
+            f"{FATAL_MAX_ORDER_QTY_ENV} 값을 양의 정수로 해석할 수 없어: {raw!r}"
+        ) from None
+
+    if not parsed.is_finite():
+        raise FatalMaxConfigError(
+            f"{FATAL_MAX_ORDER_QTY_ENV} 값이 유한한 정수가 아니야: {raw!r}"
+        )
+    if parsed != parsed.to_integral_value():
+        raise FatalMaxConfigError(
+            f"{FATAL_MAX_ORDER_QTY_ENV} 값에 소수부가 있어 정수 상한으로 쓸 수 없어: {raw!r}"
+        )
+
+    limit = int(parsed)
+    if limit == 0:
+        # 0은 검사 비활성을 의미한다.
+        return None
+    if limit < 0:
+        raise FatalMaxConfigError(
+            f"{FATAL_MAX_ORDER_QTY_ENV} 값은 음수일 수 없어: {raw!r}"
+        )
+
+    return limit
+
+
+def check_fatal_max_order_qty(qty: int, limit: Optional[int]) -> int:
+    """정규화된 수량이 Fatal_Max 상한 이하인지 검사한다.
+
+    상한을 초과해도 수량을 상한으로 조정·축소하지 않고 `FatalMaxExceededError`를
+    발생시킨다. 상한 이하이거나 상한이 비활성(`None`)이면 `qty`를 값 변경 없이
+    그대로 반환한다. broker API 호출·DB 쓰기 같은 부작용은 수행하지 않는다.
+
+    Args:
+        qty: `normalize_order_qty`로 정규화된 1 이상의 양의 정수 수량.
+        limit: `resolve_fatal_max_order_qty` 결과. `None`이면 검사 비활성.
+    """
+    if limit is None:
+        return qty
+    if qty > limit:
+        raise FatalMaxExceededError(
+            f"수량 {qty}가 Fatal_Max 상한 {limit}을 초과했어(상한으로 조정하지 않고 차단)"
+        )
+    return qty
+
+
+class CancelModifyPayloadError(ValueError):
+    """CANCEL/MODIFY 수량 분기가 KIS payload 계약을 위반할 때 발생한다.
+
+    전량/부분 취소와 정정의 수량 계약(0·음수·소수·활성 수량 초과·양의 정수가 아닌 정정 수량)을
+    브로커 호출 이전에 차단하기 위한 예외다. `QuantityValidationError`와 별도 계열로 두어
+    취소·정정 payload 계약 위반을 다른 수량 검증 오류와 구분한다.
+    """
+
+
+def resolve_cancel_modify_quantity(
+    action_type: str,
+    qty: Any = None,
+    active_order_qty: Any = None,
+) -> Tuple[str, str]:
+    """CANCEL/MODIFY 요청의 수량 분기를 계산하는 순수 함수.
+
+    `submit_rvsecncl_order()`의 인라인 수량 분기를 부작용 없는 순수 함수로 분리한 것이다.
+    broker API 호출, DB 쓰기, token 처리 같은 부작용을 수행하지 않으며, 동일 입력에 대해
+    항상 동일한 payload 또는 동일한 오류를 결정적으로 반환한다.
+
+    Args:
+        action_type: `"CANCEL"` 또는 `"MODIFY"`(대소문자 무관). 그 외 값은 오류다.
+        qty: 요청 수량. CANCEL에서 `None`이면 전량 취소, 지정되면 부분 취소 수량이다.
+            MODIFY에서 `None`이면 활성 주문 수량을 그대로 사용한다.
+        active_order_qty: Active_Order(정정/취소 대상 활성 주문)의 기존 수량.
+
+    Returns:
+        `(ord_qty, qty_all_ord_yn)` 문자열 튜플. KIS payload의 `ORD_QTY`와
+        `QTY_ALL_ORD_YN`에 그대로 대입할 수 있는 형태다.
+
+        - CANCEL, qty 생략(None) → `("0", "Y")`(전량 취소).
+        - CANCEL, 1 이상 active_order_qty 이하 정수 → `(str(qty), "N")`(부분 취소).
+        - MODIFY, 1 이상 양의 정수 → `(str(qty), "N")`.
+        - MODIFY, qty 생략(None) → `(str(active_order_qty), "N")`.
+
+    Raises:
+        CancelModifyPayloadError:
+            - action_type이 CANCEL/MODIFY가 아닐 때.
+            - CANCEL 부분 취소 수량이 0·음수·소수이거나 active_order_qty를 초과할 때.
+            - MODIFY 정정 수량(또는 생략 시 active_order_qty)이 양의 정수가 아닐 때.
+    """
+    normalized_action = str(action_type).upper()
+    if normalized_action not in ("CANCEL", "MODIFY"):
+        raise CancelModifyPayloadError(
+            f"resolve_cancel_modify_quantity는 CANCEL 또는 MODIFY만 지원해: {action_type!r}"
+        )
+
+    def _positive_int(value: Any, label: str) -> int:
+        # 수량 정규화·검증(C1)과 동일한 의미(0·음수·소수·bool·비숫자 거부)를 재사용하되,
+        # 취소·정정 payload 계약 위반은 CancelModifyPayloadError로 신호한다.
+        try:
+            return normalize_order_qty(value)
+        except QuantityValidationError as exc:
+            raise CancelModifyPayloadError(f"{label}이(가) 1 이상의 정수가 아니야: {value!r}") from exc
+
+    if normalized_action == "CANCEL":
+        if qty is None:
+            # 전량 취소: ORD_QTY=0, QTY_ALL_ORD_YN=Y
+            return "0", "Y"
+        cancel_qty = _positive_int(qty, "부분 취소 수량")
+        active_qty = _positive_int(active_order_qty, "활성 주문 수량")
+        if cancel_qty > active_qty:
+            raise CancelModifyPayloadError(
+                f"부분 취소 수량 {cancel_qty}가 활성 주문 수량 {active_qty}를 초과했어"
+            )
+        # 부분 취소: ORD_QTY=취소 수량, QTY_ALL_ORD_YN=N
+        return str(cancel_qty), "N"
+
+    # MODIFY: 수량 생략 시 활성 주문 수량을 그대로 사용한다.
+    if qty is None:
+        modify_qty = _positive_int(active_order_qty, "활성 주문 수량")
+    else:
+        modify_qty = _positive_int(qty, "정정 수량")
+    return str(modify_qty), "N"
 
 
 def normalize_order_method(
@@ -647,6 +874,100 @@ def update_order_request_status_only(
             )
         conn.commit()
 
+
+# submit_rvsecncl_order() 경로 로컬 상태 단조성 보호의 Terminal 집합.
+# 아래 조건부 UPDATE의 SQL IN 목록과 동일하게 유지해야 한다.
+TERMINAL_REQUEST_STATUSES: Tuple[str, ...] = ("FILLED", "CANCELED", "REJECTED", "FAILED")
+
+
+class RequestStatusTransition(NamedTuple):
+    """`resolve_request_status_transition`의 판정 결과.
+
+    Attributes:
+        allowed: 갱신을 성공으로 취급할지 여부. 비-Terminal 갱신과 동일 Terminal 재적용
+            (no-op)이면 True, Terminal 역행 차단이면 False다.
+        result_status: 판정 후 결과 상태. 허용 시 요청 상태(동일 Terminal 재적용이면
+            그 Terminal 상태), 차단 시 현재 Terminal 상태를 그대로 유지한다.
+    """
+
+    allowed: bool
+    result_status: str
+
+
+def resolve_request_status_transition(
+    current_status: Optional[str],
+    requested_status: str,
+) -> RequestStatusTransition:
+    """`submit_rvsecncl_order()` 경로의 로컬 주문 요청 상태 전이를 판정하는 순수 함수.
+
+    Terminal 상태(`FILLED`, `CANCELED`, `REJECTED`, `FAILED`)에서 다른 상태로의 역행을
+    차단한다. broker API 호출, DB 접근, token 처리 같은 부작용을 수행하지 않으며, 동일
+    입력에 대해 항상 동일한 결과를 결정적으로 반환한다.
+
+    Args:
+        current_status: 현재 `request_status`. `None`은 비-Terminal로 취급한다.
+        requested_status: 갱신 요청 상태.
+
+    Returns:
+        RequestStatusTransition:
+            - 현재 상태가 비-Terminal → `allowed=True`, `result_status=requested_status`.
+            - 현재 상태가 Terminal이고 요청 상태가 같음 → `allowed=True`(no-op),
+              `result_status=current_status`.
+            - 현재 상태가 Terminal이고 요청 상태가 다름 → `allowed=False`(차단),
+              `result_status=current_status`.
+    """
+    if current_status in TERMINAL_REQUEST_STATUSES:
+        if requested_status == current_status:
+            # 동일 Terminal 재적용: 오류 없이 허용(no-op), 결과는 그 Terminal 상태 유지.
+            return RequestStatusTransition(allowed=True, result_status=current_status)
+        # Terminal 역행 차단: 성공 아님, 현재 Terminal 상태를 그대로 유지.
+        return RequestStatusTransition(allowed=False, result_status=current_status)
+    # 비-Terminal: 갱신 허용, 결과는 요청 상태.
+    return RequestStatusTransition(allowed=True, result_status=requested_status)
+
+
+def update_order_request_status_if_not_terminal(
+    order_request_id: int,
+    request_status: str,
+    message: Optional[str] = None,
+) -> bool:
+    """Terminal 역행을 차단하는 조건부 UPDATE로 로컬 주문 요청 상태를 갱신한다.
+
+    `resolve_request_status_transition`과 동일한 판정을 단일 원자적 조건부 UPDATE로
+    수행한다. 현재 상태가 Terminal이고 요청 상태가 다르면 갱신하지 않고(0행) 차단하며,
+    동일 Terminal 재적용은 오류 없이 허용한다. 이 보호는 `submit_rvsecncl_order()`
+    경로의 로컬 상태 보호로만 정의하며, 대상 파일 밖 전체 주문 동기화의 단조성을
+    보장한다고 주장하지 않는다.
+
+    기존 `update_order_request_status_only()`는 다른 경로 호환을 위해 그대로 유지한다.
+
+    Returns:
+        갱신 성공 여부. 갱신(또는 동일 Terminal no-op)으로 1행 이상 반영되면 `True`,
+        Terminal 역행 차단(0행)이면 차단 실패 지시로 `False`를 반환한다.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                # WHERE의 Terminal IN 목록은 TERMINAL_REQUEST_STATUSES와 동일하게 유지한다.
+                """
+                UPDATE connector_order_request
+                   SET request_status = %s,
+                       rejection_message = COALESCE(%s, rejection_message),
+                       last_event_at = NOW(),
+                       updated_at = NOW()
+                 WHERE id = %s
+                   AND (
+                        request_status = %s
+                        OR request_status NOT IN ('FILLED', 'CANCELED', 'REJECTED', 'FAILED')
+                   )
+                """,
+                (request_status, message, order_request_id, request_status),
+            )
+            updated_rows = cur.rowcount
+        conn.commit()
+    return updated_rows >= 1
+
+
 def apply_rvsecncl_parent_status_after_success(
     *,
     action_type: str,
@@ -664,15 +985,18 @@ def apply_rvsecncl_parent_status_after_success(
     """
     action_type = action_type.upper()
 
+    # 후처리 상태 전이는 Terminal 역행 차단 가드를 통해 갱신한다.
+    # 비-Terminal → MODIFIED, 비-Terminal → CANCELED 기존 정상 전이는 그대로 허용되고,
+    # 이미 Terminal(FILLED/CANCELED/REJECTED/FAILED)인 활성 주문은 덮어쓰지 않는다.
     if action_type == "MODIFY":
-        update_order_request_status_only(
+        update_order_request_status_if_not_terminal(
             active_order_id,
             "MODIFIED",
             "modified by subsequent MODIFY request",
         )
 
     elif action_type == "CANCEL":
-        update_order_request_status_only(
+        update_order_request_status_if_not_terminal(
             active_order_id,
             "CANCELED",
             "canceled by subsequent CANCEL request",
@@ -726,20 +1050,14 @@ def submit_rvsecncl_order(
     # KIS 정정·취소 계약:
     # - 전량 취소: ORD_QTY=0, QTY_ALL_ORD_YN=Y
     # - 부분 취소: ORD_QTY=취소 수량, QTY_ALL_ORD_YN=N
+    # - MODIFY: 대상 수량을 명시(생략 시 활성 주문 수량 사용).
     #
-    # MODIFY는 기존처럼 대상 수량을 명시한다.
-    if action_type == "CANCEL" and qty is None:
-        request_qty = 0
-        qty_all_order_yn = "Y"
-    else:
-        request_qty = int(qty) if qty is not None else int(active_order.get("order_qty") or 0)
-        qty_all_order_yn = "N"
-
-    if action_type == "CANCEL":
-        if qty is not None and request_qty <= 0:
-            raise ValueError("부분 취소 qty는 1 이상이어야 해")
-    elif request_qty <= 0:
-        raise ValueError("MODIFY qty는 1 이상이어야 해")
+    # 수량 분기는 부작용 없는 순수 함수 resolve_cancel_modify_quantity로 계산한다.
+    # payload 미구성·브로커 미호출 계약을 위해 payload 구성·브로커 호출 이전에 먼저 호출한다.
+    ord_qty_str, qty_all_order_yn = resolve_cancel_modify_quantity(
+        action_type, qty, active_order.get("order_qty")
+    )
+    request_qty = int(ord_qty_str)
 
     request_payload = {
         "CANO": PAPER_ACNT,
@@ -846,7 +1164,9 @@ def submit_rvsecncl_order(
         # order_request_id는 이번에 새로 생성된 CANCEL 요청 row다.
         # ---------------------------------------------------------
         if action_type == "CANCEL":
-            update_order_request_status_only(
+            # 비-Terminal → CANCEL_ACCEPTED 기존 정상 전이는 그대로 유지하되,
+            # Terminal 역행 차단 가드를 통해 갱신한다.
+            update_order_request_status_if_not_terminal(
                 order_request_id,
                 "CANCEL_ACCEPTED",
                 "cancel request accepted by broker",
