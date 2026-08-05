@@ -13,6 +13,65 @@ port-marketconnector 코드와 문서의 주요 변경 이력을 기록한다.
 | 실행 기록 | 실제 수행한 검증만 기록 |
 | 민감정보 | token · 계좌 · 주문번호 · secret · ARN · endpoint 원문 금지 |
 
+## 2026-08-04 — 주문 경계 안전 강화와 Versioned 운영 배포
+
+### Added
+
+| 항목 | 값 |
+| --- | --- |
+| Claim | Execution Order 원자적 Claim |
+| 수량 정규화 | 공통 주문 수량 정규화 |
+| Fatal Max | 환경변수 기반 비상 최대 수량 검사 |
+| Cancel/Modify | 취소·정정 수량 resolver |
+| 상태 Guard | Terminal 상태 전이 Guard |
+| Test | Property Test와 회귀 Test |
+| 동기화 실패 | Broker 성공 후 상태 동기화 실패 처리 |
+| 배포 증적 | MarketConnector 전용 Versioned Artifact 배포 |
+
+### Changed
+
+| 항목 | 값 |
+| --- | --- |
+| 제출 순서 | 수량 검증 → Fatal Max → Claim → Broker 호출 |
+| Broker 호출 | Claim 성공 주문에서만 수행 |
+| 전량 취소 Payload | `ORD_QTY=0` · `QTY_ALL_ORD_YN=Y` 고정 |
+| 부분 취소 Payload | 요청 수량 · `QTY_ALL_ORD_YN=N` 고정 |
+| 상태 UPDATE | 허용된 이전 상태 조건부 전이 |
+| Artifact 목적지 | MarketConnector 전용 Versioned S3로 통일 |
+| Artifact Prefix | 기존 성공 배포 기준과 일치 |
+
+### Fixed
+
+| 문제 | 해결 |
+| --- | --- |
+| 동일 Execution Order 재제출 가능성 | 원자적 Claim으로 중복 차단 |
+| 0·음수·소수·Boolean 수량 | Broker 호출 전 명시적 거부 |
+| 비상 이상치 수량 | Fatal Max 초과 시 자동 축소 없이 차단 |
+| 전량 취소 수량 오류 | 전량 0/Y 계약 적용 |
+| Terminal 상태 역행 가능성 | 조건부 상태 전이 Guard 적용 |
+| Broker 성공 후 DB 동기화 실패 오판정 | 성공 출력과 후속 상태 기록 차단 |
+| Claim 실패 상태 기록의 추가 예외 | Batch 중단 없이 별도 오류 처리 |
+| CodeBuild의 Migration Artifact 경로 잔존 | 전용 Versioned Artifact 경로로 전환 |
+
+### Security
+
+| 항목 | 결과 |
+| --- | --- |
+| 전체 Pytest | 55개 성공 |
+| Ruff | 성공 |
+| Python Compile | 성공 |
+| CodeBuild | 성공 |
+| Versioned S3 Artifact | 생성 성공 |
+| CodeDeploy In-place | 성공 |
+| Lifecycle Hook | 전체 성공 |
+| Manifest Source SHA | 일치 |
+| 핵심 운영 파일 SHA-256 | 3개 일치 |
+| `config.py` 권한 · Runtime token | 보존 |
+| Connector 프로세스 | 0개 |
+| Broker 주문 API 호출 | 0건 |
+| BUY·SELL·취소·정정 실행 | 0건 |
+| Secret 값 출력 | 0건 |
+
 ## 2026-08-01 — MarketConnector DevOps와 CodeDeploy In-place 배포
 
 ### Added

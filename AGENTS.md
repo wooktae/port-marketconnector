@@ -329,6 +329,66 @@ View API 변경 시 port-view의 DTO, endpoint 계약과 하위 호환성을 확
 - 부분 체결, 미체결, 거절과 취소 상태를 하나의 성공 상태로 합치지 않는다.
 - 취소와 정정은 원주문 context를 확인한 뒤 수행한다.
 
+주문 중복 제출 차단을 위해 아래 Claim 원칙을 지킨다.
+
+- 동일 `strategy_execution_order`는 Broker 제출 전에 원자적 Claim을 획득한다.
+- Claim 대상 상태는 `REQUESTED`이며 성공 시 `SUBMITTING`으로 전환한다.
+- Claim 결과가 0행이면 중복 또는 선점된 주문으로 판단하고 Broker를 호출하지 않는다.
+- Claim DB 오류가 발생하면 Broker를 호출하지 않는다.
+- Claim 실패를 주문 제출 성공으로 변환하지 않는다.
+- 한 주문의 Claim 또는 상태 기록 실패가 후속 주문 Batch 전체를 비정상 종료시키지 않도록 단위 실패로 격리한다.
+- 실제 Broker 호출 횟수는 성공한 Claim당 최대 1회여야 한다.
+- 자동 retry로 동일 Execution Order를 재제출하지 않는다.
+
+### 5.4.1 수량 검증
+
+- BUY와 SELL 수량은 Broker 호출 전에 공통 정규화 함수를 거친다.
+- 허용 수량은 1 이상의 정수다.
+- 0과 음수는 거부한다.
+- 정수와 정확히 같은 숫자 문자열 또는 Decimal은 정수로 변환할 수 있다.
+- 소수 수량은 절사하거나 반올림하지 않고 거부한다.
+- Boolean은 정수처럼 취급하지 않고 거부한다.
+- 숫자로 해석할 수 없는 값은 거부한다.
+- 정규화된 수량은 Broker 호출까지 값 변경 없이 전달한다.
+- 수량 검증 실패 시 Broker 호출, token 호출과 운영 DB 후속 처리를 수행하지 않는다.
+
+비상 최대 수량 차단 기준은 아래와 같다.
+
+- `STEP12_FATAL_MAX_ORDER_QTY`는 주문 직전 비상 최대 수량 차단 설정이다.
+- 미설정 또는 0이면 검사를 비활성화한다.
+- 양의 정수이면 해당 수량을 초과하는 주문을 차단한다.
+- 초과 수량을 최대값으로 자동 축소하지 않는다.
+- 음수, 소수, 비숫자 설정은 명시적 구성 오류로 처리한다.
+- 일반 수량 검증을 Fatal Max 검사보다 먼저 수행한다.
+- `connector_order_common.py`의 순수 검증 함수 정의와 실제 주문 제출 경계의 적용 책임을 구분한다.
+- 공통 함수가 존재한다는 이유만으로 모든 주문 경로에 자동 적용됐다고 가정하지 않는다.
+
+### 5.4.2 취소·정정 Payload 계약
+
+| 항목 | 기준 |
+| --- | --- |
+| 전량 취소·정정 | `ORD_QTY=0` · `QTY_ALL_ORD_YN=Y` |
+| 부분 취소·정정 | 요청 수량 · `QTY_ALL_ORD_YN=N` |
+| 수량 검증 | Broker 호출 전 순수 resolver에서 검증 |
+| 오류 처리 | Payload를 만들지 않고 Broker를 호출하지 않음 |
+
+- 전량 취소에 기존 주문수량을 전달하지 않는다.
+- 부분 취소 수량은 1 이상의 유효한 정수여야 한다.
+- 전량·부분 분기 계약을 Wrapper와 공통 함수에서 다르게 해석하지 않는다.
+
+### 5.4.3 Terminal 상태 단조성
+
+Terminal 상태는 `SUBMITTED`, `FAILED`, `CANCELED`다.
+
+- Terminal 상태에서 비Terminal 또는 다른 Terminal 상태로 임의 역행하지 않는다.
+- 상태 UPDATE는 허용된 이전 상태를 조건으로 수행한다.
+- UPDATE 결과가 0행이면 성공으로 간주하지 않는다.
+- Broker 제출 성공 후 `SUBMITTED` 상태 반영이 실패하면 주문 성공 로그를 남기지 않는다.
+- 이 경우 `SELL_ORDERED` 같은 후속 상태도 기록하지 않는다.
+- Broker 성공 후 DB 상태 동기화 실패를 `FAILED`로 덮어써 Broker 결과를 왜곡하지 않는다.
+- `SUBMITTED_STATE_SYNC_FAILED`와 같은 명시적 운영 오류로 남기고 Fail-closed 처리한다.
+- 상태 기록 중 추가 오류가 발생해도 Batch의 나머지 주문 처리를 계속할 수 있도록 오류를 격리한다.
+
 ### 5.5 주문 · 체결 동기화
 
 `connector_order_check.py`의 direct 조회 우선 의미를 유지한다.
@@ -595,11 +655,18 @@ IAM Role, policy와 Scheduler 이름은 운영 식별 정보이며 변경 시 cr
 | 순수 함수 | 관련 unit test |
 | Flask route | test client + 외부 의존 mock |
 | KIS client | request · response parsing mock |
-| 주문 로직 | dry-run · idempotency · 중복 차단 test |
+| 주문 로직 | dry-run · idempotency · 원자적 Claim · 중복 제출 차단 test |
+| 주문 수량 | 수량 Property Test · Fatal Max 경계 Test |
+| 취소·정정 | 전량 0/Y · 부분 수량/N Payload Contract Test |
+| 주문 상태 | Terminal 상태 단조성 Test |
+| 주문 회귀 | Broker 성공 후 상태 동기화 실패 · Claim과 상태 기록 이중 실패 회귀 Test |
+| 호출 횟수 | Broker·token·운영 DB 호출 0건과 성공 Claim당 Broker Mock 1회 검증 |
 | Repository | SQL · parameter · transaction test |
 | Token | 파일과 HTTP mock |
 | 문서 | 링크 · 사실 · 가독성 |
 | Shell | syntax와 인자 전달 정적 확인 |
+
+주문 경계 안전 기능에서 Property Test는 선택 사항이 아니라 필수 검증이다.
 
 실행 위험 import가 있는 파일은 compile 과정에서도 side effect 여부를 먼저 확인한다.
 

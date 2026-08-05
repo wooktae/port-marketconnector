@@ -150,11 +150,11 @@ repository root 기준 상대 경로를 사용하며 cache, token 파일과 일�
 
 | 파일 | 역할 |
 | --- | --- |
-| `connector_order_common.py` | 주문 생성 · broker 호출 · 응답 반영 |
+| `connector_order_common.py` | 주문 수량 정규화 · Fatal Max · 취소/정정 resolver · 상태 전이 Guard · broker 공통 처리 |
 | `connector_buy.py` | 매수 주문 wrapper |
 | `connector_sell.py` | 매도 주문 wrapper |
-| `connector_cancel.py` | 주문 취소 wrapper |
-| `connector_modify.py` | 주문 정정 wrapper |
+| `connector_cancel.py` | 전량 0/Y · 부분 수량/N 계약을 적용하는 취소 wrapper |
+| `connector_modify.py` | 전량·부분 수량 계약을 적용하는 정정 wrapper |
 
 ### 변경 시 확인
 
@@ -163,9 +163,14 @@ repository root 기준 상대 경로를 사용하며 cache, token 파일과 일�
 | Idempotency | 기존 order request 상태 확인 |
 | Retry | 주문 자동 retry 금지 |
 | TR ID | paper/live와 요청 유형 정합 |
-| 취소 · 정정 | 원주문 context 확인 |
 | Status | 요청 · 접수 · 체결 · 거절 구분 |
 | Log | broker 주문번호 전체 노출 금지 |
+| Quantity | 1 이상 정수 · Boolean·소수 차단 |
+| Fatal Max | 초과 수량 자동 축소 금지 |
+| Cancel/Modify | 전량 0/Y · 부분 수량/N |
+| Terminal Status | 허용된 이전 상태 조건부 UPDATE |
+| Side Effect | 검증 실패 시 Broker·token·DB 후속 호출 차단 |
+| Test | Property · 경계 · 호출 횟수 검증 |
 
 ## 주문과 체결 동기화
 
@@ -196,7 +201,7 @@ repository root 기준 상대 경로를 사용하며 cache, token 파일과 일�
 
 | 파일 | 역할 |
 | --- | --- |
-| `connector_strategy_order_execute.py` | 승인된 전략 주문 제출 |
+| `connector_strategy_order_execute.py` | 승인된 전략 주문 제출 · Execution Order 원자적 Claim · 중복 Broker 제출 차단 · 수량과 Fatal Max 검증 · Broker 결과와 상태 동기화 · 단위 실패 격리 |
 
 ### 운영 기준
 
@@ -205,6 +210,11 @@ repository root 기준 상대 경로를 사용하며 cache, token 파일과 일�
 | 기본 | dry run |
 | 실제 주문 | `--execute` |
 | 승인 gate | `portfolio-paper-daily-step12-17-approval` |
+| Claim | `REQUESTED → SUBMITTING` |
+| Broker 호출 | Claim 성공 주문만 |
+| 중복 주문 | Claim 0행이면 skip |
+| 상태 실패 | Broker 성공으로 출력하지 않음 |
+| Batch | 단위 실패 후 후속 대상 계속 |
 | 저장 | order request · API call log |
 | 후속 | `connector_order_check.py` |
 
@@ -333,6 +343,12 @@ approval gate를 우회하는 기본값이나 자동 실행 fallback을 추가�
 | Source·Bundle | Source SHA와 Bundle Version 정합성 확인 |
 | Hook 실행 | Connector·주문 자동 실행 없음 확인 |
 | Rollback | token 파일 보존 확인 |
+| Artifact Store | MarketConnector 전용 Versioned S3 |
+| Revision | Bucket · Key · Version ID 고정 |
+| Manifest | Source SHA 확인 |
+| 운영 Source | Manifest SHA-256과 실제 파일 비교 |
+| Runtime 보호 | `config.py` · token 파일 보존 |
+| 무주문 검증 | Connector 프로세스와 Broker 호출 0건 |
 
 ## Tests
 
@@ -343,7 +359,11 @@ approval gate를 우회하는 기본값이나 자동 실행 fallback을 추가�
 | Flask route | test client · 외부 의존 mock |
 | KIS parsing | HTTP response mock |
 | Token | HTTP · 파일 mock |
-| 주문 | dry-run · idempotency · 중복 차단 |
+| 주문 | dry-run · idempotency · 원자적 Claim · 중복 차단 |
+| 주문 수량 | 수량 Property Test · Fatal Max |
+| 취소·정정 | 전량·부분 취소 Contract |
+| 주문 상태 | Terminal 상태 단조성 |
+| 호출 횟수 | Broker·token·DB 호출 횟수 |
 | Repository | SQL · parameter · transaction |
 | Shell | syntax · 인자 전달 정적 확인 |
 | 문서 | 링크 · 사실 · 가독성 |

@@ -16,11 +16,16 @@
 | Daily 주문 | Step Functions approval 이후 실행 |
 | Intraday | Scheduler 기반 Snapshot Refresh · hard stop 판단 |
 | broker 주문 | 승인된 경로에서만 제출 |
+| 중복 주문 보호 | Execution Order 원자적 Claim |
+| 주문 수량 보호 | 정수 검증 · Fatal Max |
+| 취소 계약 | 전량 0/Y · 부분 수량/N |
+| 상태 보호 | Terminal 상태 단조성 |
 | View API | port-view 조회 연동 |
 | CI | GitHub Actions → CodeBuild |
 | 배포 Artifact | Git SHA 기반 Versioned ZIP Bundle |
-| Artifact 저장소 | Versioning 활성 Private S3 |
+| Artifact 저장소 | MarketConnector 전용 Versioning 활성 Private S3 |
 | 배포 방식 | CodeDeploy EC2 In-place |
+| 배포 검증 | Manifest와 운영 파일 SHA-256 정합성 |
 | 배포 대상 | 기존 MarketConnector EC2 Application 경로 |
 | 배포 안전 | Deployment Lock · Connector 단일 실행 Guard |
 | Rollback | 배포 전 Backup Source 복원 |
@@ -240,16 +245,22 @@ token 값과 token 파일 내용은 출력하거나 문서화하지 않는다.
 
 주문 흐름:
 
-1. 주문 요청 상태 확인
-2. `connector_order_request` 생성 또는 갱신
-3. KIS 주문 제출
-4. broker 응답 반영
-5. API call log 저장
-6. 후속 주문 · 체결 동기화
+1. 주문 대상과 기존 상태 확인
+2. 수량 정규화와 Fatal Max 검사
+3. `REQUESTED → SUBMITTING` 원자적 Claim
+4. Claim 성공 주문만 KIS Broker 제출
+5. Broker 결과 저장
+6. 허용된 상태 전이로 `SUBMITTED` 또는 실패 결과 반영
+7. 후속 주문 · 체결 동기화
 
-주문 retry는 조회 API와 동일하게 다루지 않는다.
+주요 원칙:
 
-자동 retry로 중복 주문을 만들지 않는다.
+- 동일 Execution Order의 중복 제출을 차단한다.
+- Claim 0행은 Broker 호출 없이 skip한다.
+- 수량 오류와 Fatal Max 초과는 수량을 자동 보정하지 않고 차단한다.
+- Broker 성공 후 DB 상태 동기화 실패는 정상 주문 성공으로 출력하지 않는다.
+- 한 주문의 실패는 단위 결과로 격리하고 후속 Batch 처리를 유지한다.
+- 자동 retry로 중복 주문을 만들지 않는다.
 
 ### 취소 · 정정
 
@@ -258,7 +269,14 @@ token 값과 token 파일 내용은 출력하거나 문서화하지 않는다.
 | `connector_cancel.py` | 기존 주문 취소 |
 | `connector_modify.py` | 기존 주문 정정 |
 
-원주문 context와 broker 주문 상태를 확인한 뒤 수행한다.
+| 구분 | Payload |
+| --- | --- |
+| 전량 취소·정정 | `ORD_QTY=0` · `QTY_ALL_ORD_YN=Y` |
+| 부분 취소·정정 | 요청 수량 · `QTY_ALL_ORD_YN=N` |
+
+- 전량 취소에는 원주문 수량을 전달하지 않는다.
+- Payload 수량은 Broker 호출 전에 검증한다.
+- 원주문 context와 broker 주문 상태를 확인한 뒤 수행한다.
 
 ### 주문 · 체결 동기화
 
@@ -285,8 +303,15 @@ broad summary를 특정 주문의 event나 fill로 잘못 귀속하지 않는다
 | 기본 동작 | dry run |
 | 실제 제출 | `--execute` |
 | 승인 gate | `portfolio-paper-daily-step12-17-approval` |
+| 제출 선점 | `REQUESTED → SUBMITTING` 원자적 Claim |
+| 중복 방지 | Claim 성공 주문만 Broker 호출 |
+| 수량 검증 | 정수 수량 · Fatal Max |
+| 상태 전이 | Terminal 상태 역행 차단 |
+| 실패 격리 | 단위 주문 실패 후 Batch 계속 |
 | 저장 | order request · API call log |
 | 후속 | `connector_order_check.py` |
+
+`SUBMITTING`은 Broker 제출 전 선점 상태이며 Broker 성공 상태가 아니다.
 
 approval workflow를 통과하지 않은 상태에서 `--execute`를 사용하지 않는다.
 
@@ -349,7 +374,14 @@ Git Commit → GitHub Actions → CodeBuild → Git SHA ZIP Bundle → S3 Versio
 | 결정성 | Main과 Detached Head에서 동일 Bundle |
 | Bundle 포함 목록 | `.devops/bundle/include.txt` |
 | Bundle 생성기 | `.devops/scripts/build_bundle.py` |
-| S3 Artifact | Source 전체 SHA Versioned Key |
+| Artifact 경로 | MarketConnector 전용 배포 Bucket과 Prefix로 통일 |
+| IAM Policy | 기존 전용 S3 IAM Policy 재사용 |
+| Object Key | Git SHA 기반 |
+| Revision | S3 Version ID를 고정한 CodeDeploy Revision |
+| Manifest 검증 | `.codedeploy/staging/deployment-manifest.json` Source SHA 확인 |
+| 파일 정합성 | Manifest 핵심 파일 SHA-256과 운영 src 파일 SHA-256 비교 |
+| Runtime 보존 | `config.py`와 Runtime token 파일 보존 |
+| 배포 중 실행 | Connector 프로세스와 주문 API 호출 0건 |
 | Hook 책임 | Backup · 설치 · 권한 · Lock · 검증 |
 | Application 실행 | CodeDeploy가 자동 실행하지 않음 |
 | 실제 실행 경로 | 기존 SSM · Scheduler 운영 |
@@ -394,6 +426,23 @@ Hook Script 내부 구현은 `codedeploy/` 파일에서 관리하며 문서에 �
 | Runtime token 보존 | 성공 |
 | Connector 프로세스 | 0개 |
 | 주문 API 호출 | 0건 |
+
+### 2026-08-04 주문 경계 안전 개선 검증
+
+| 항목 | 결과 |
+| --- | --- |
+| 전체 Pytest | 55개 성공 |
+| Property Test | 성공 |
+| Ruff | 성공 |
+| Python Compile | 성공 |
+| CodeBuild | 성공 |
+| Versioned Artifact | 생성 성공 |
+| CodeDeploy Lifecycle | 전체 성공 |
+| Manifest Source SHA | 일치 |
+| 핵심 파일 SHA-256 | 3개 일치 |
+| Runtime 파일 | 보존 |
+| Connector 프로세스 | 0개 |
+| Broker 주문 API | 0건 |
 
 Deployment ID, SSM Command ID, S3 Version ID와 전체 SHA-256 원문은 기록하지 않는다.
 
