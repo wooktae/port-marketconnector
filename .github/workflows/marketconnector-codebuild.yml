@@ -82,3 +82,228 @@ jobs:
                 ;;
             esac
           done
+
+      - name: Prepare MarketConnector EC2
+        if: github.event_name == 'push' || inputs.push_artifact == true
+        id: ec2
+        shell: bash
+        env:
+          INSTANCE_ID: ${{ vars.MARKETCONNECTOR_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+
+          echo "=== RESOLVE EC2 STATE ==="
+
+          INSTANCE_STATE="$(
+            aws ec2 describe-instances \
+              --instance-ids "${INSTANCE_ID}" \
+              --query "Reservations[0].Instances[0].State.Name" \
+              --output text
+          )"
+
+          echo "INSTANCE_STATE_BEFORE=${INSTANCE_STATE}"
+
+          case "${INSTANCE_STATE}" in
+            running)
+              echo "started_by_workflow=false" >> "${GITHUB_OUTPUT}"
+              ;;
+
+            stopped)
+              echo "started_by_workflow=true" >> "${GITHUB_OUTPUT}"
+
+              echo "=== START MARKETCONNECTOR EC2 ==="
+
+              aws ec2 start-instances \
+                --instance-ids "${INSTANCE_ID}" \
+                >/dev/null
+
+              aws ec2 wait instance-running \
+                --instance-ids "${INSTANCE_ID}"
+
+              echo "MARKETCONNECTOR_EC2_START=SUCCESS"
+              ;;
+
+            pending)
+              echo "started_by_workflow=false" >> "${GITHUB_OUTPUT}"
+
+              aws ec2 wait instance-running \
+                --instance-ids "${INSTANCE_ID}"
+              ;;
+
+            stopping)
+              echo "started_by_workflow=true" >> "${GITHUB_OUTPUT}"
+
+              aws ec2 wait instance-stopped \
+                --instance-ids "${INSTANCE_ID}"
+
+              aws ec2 start-instances \
+                --instance-ids "${INSTANCE_ID}" \
+                >/dev/null
+
+              aws ec2 wait instance-running \
+                --instance-ids "${INSTANCE_ID}"
+
+              echo "MARKETCONNECTOR_EC2_START=SUCCESS"
+              ;;
+
+            *)
+              echo "UNSUPPORTED_INSTANCE_STATE=${INSTANCE_STATE}"
+              exit 40
+              ;;
+          esac
+
+      - name: Wait for MarketConnector SSM
+        if: github.event_name == 'push' || inputs.push_artifact == true
+        shell: bash
+        env:
+          INSTANCE_ID: ${{ vars.MARKETCONNECTOR_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+
+          echo "=== WAIT FOR SSM ONLINE ==="
+
+          for ATTEMPT in $(seq 1 30); do
+            PING_STATUS="$(
+              aws ssm describe-instance-information \
+                --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+                --query "InstanceInformationList[0].PingStatus" \
+                --output text
+            )"
+
+            echo "SSM_ATTEMPT=${ATTEMPT} STATUS=${PING_STATUS}"
+
+            if [ "${PING_STATUS}" = "Online" ]; then
+              echo "MARKETCONNECTOR_SSM_ONLINE=SUCCESS"
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          echo "MARKETCONNECTOR_SSM_ONLINE=FAILED"
+          exit 50
+
+      - name: Deploy MarketConnector
+        if: github.event_name == 'push' || inputs.push_artifact == true
+        shell: bash
+        env:
+          PROJECT_NAME: portfolio-marketconnector-build
+          APPLICATION_NAME: portfolio-marketconnector
+          DEPLOYMENT_GROUP: portfolio-marketconnector-ec2
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "=== RESOLVE VERSIONED ARTIFACT ==="
+
+          SHORT_SHA="$(printf '%s' "${SOURCE_SHA}" | cut -c1-12)"
+
+          ARTIFACT_BUCKET="$(
+            aws codebuild batch-get-projects \
+              --names "${PROJECT_NAME}" \
+              --query "projects[0].environment.environmentVariables[?name=='ARTIFACT_BUCKET'].value | [0]" \
+              --output text
+          )"
+
+          if [ -z "${ARTIFACT_BUCKET}" ] || [ "${ARTIFACT_BUCKET}" = "None" ]; then
+            echo "ARTIFACT_BUCKET=EMPTY"
+            exit 60
+          fi
+
+          S3_KEY="marketconnector/${SOURCE_SHA}/port-marketconnector-${SHORT_SHA}.zip"
+
+          VERSION_ID="$(
+            aws s3api head-object \
+              --bucket "${ARTIFACT_BUCKET}" \
+              --key "${S3_KEY}" \
+              --query "VersionId" \
+              --output text
+          )"
+
+          if [ -z "${VERSION_ID}" ] || [ "${VERSION_ID}" = "None" ]; then
+            echo "S3_VERSION_ID=EMPTY"
+            exit 70
+          fi
+
+          echo "SOURCE_SHA=${SOURCE_SHA}"
+          echo "S3_KEY=${S3_KEY}"
+          echo "S3_VERSION_RESOLVED=YES"
+
+          echo "=== CREATE CODEDEPLOY DEPLOYMENT ==="
+
+          DEPLOYMENT_ID="$(
+            aws deploy create-deployment \
+              --application-name "${APPLICATION_NAME}" \
+              --deployment-group-name "${DEPLOYMENT_GROUP}" \
+              --revision revisionType=S3,s3Location="{bucketName=${ARTIFACT_BUCKET},key=${S3_KEY},bundleType=zip,version=${VERSION_ID}}" \
+              --description "MarketConnector ${SOURCE_SHA}" \
+              --query "deploymentId" \
+              --output text
+          )"
+
+          if [ -z "${DEPLOYMENT_ID}" ] || [ "${DEPLOYMENT_ID}" = "None" ]; then
+            echo "DEPLOYMENT_ID=EMPTY"
+            exit 80
+          fi
+
+          echo "CODEDEPLOY_CREATED=YES"
+
+          echo "=== WAIT FOR CODEDEPLOY ==="
+
+          while true; do
+            DEPLOYMENT_STATUS="$(
+              aws deploy get-deployment \
+                --deployment-id "${DEPLOYMENT_ID}" \
+                --query "deploymentInfo.status" \
+                --output text
+            )"
+
+            echo "DEPLOYMENT_STATUS=${DEPLOYMENT_STATUS}"
+
+            case "${DEPLOYMENT_STATUS}" in
+              Succeeded)
+                echo "MARKETCONNECTOR_CODEDEPLOY=SUCCESS"
+                break
+                ;;
+
+              Failed|Stopped)
+                aws deploy get-deployment \
+                  --deployment-id "${DEPLOYMENT_ID}" \
+                  --query "deploymentInfo.errorInformation" \
+                  --output json || true
+
+                echo "MARKETCONNECTOR_CODEDEPLOY=FAILED"
+                exit 90
+                ;;
+
+              Created|Queued|InProgress|Ready)
+                sleep 10
+                ;;
+
+              *)
+                echo "UNKNOWN_DEPLOYMENT_STATUS=${DEPLOYMENT_STATUS}"
+                exit 100
+                ;;
+            esac
+          done
+
+          echo "MARKETCONNECTOR_RELEASE=SUCCESS"
+
+      - name: Restore EC2 state
+        if: always() && steps.ec2.outputs.started_by_workflow == 'true'
+        shell: bash
+        env:
+          INSTANCE_ID: ${{ vars.MARKETCONNECTOR_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+
+          echo "=== RESTORE MARKETCONNECTOR EC2 STATE ==="
+
+          aws ec2 stop-instances \
+            --instance-ids "${INSTANCE_ID}" \
+            >/dev/null
+
+          aws ec2 wait instance-stopped \
+            --instance-ids "${INSTANCE_ID}"
+
+          echo "MARKETCONNECTOR_EC2_RESTORE_STOPPED=SUCCESS"
