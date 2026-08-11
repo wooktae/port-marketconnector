@@ -1,6 +1,10 @@
 name: MarketConnector CodeBuild
 
 on:
+  push:
+    branches:
+      - main
+
   workflow_dispatch:
     inputs:
       push_artifact:
@@ -28,7 +32,7 @@ jobs:
         shell: bash
         env:
           PROJECT_NAME: portfolio-marketconnector-build
-          PUSH_ARTIFACT: ${{ inputs.push_artifact }}
+          PUSH_ARTIFACT: ${{ github.event_name == 'push' && 'true' || inputs.push_artifact }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
