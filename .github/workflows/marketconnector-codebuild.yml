@@ -235,7 +235,7 @@ jobs:
             aws deploy create-deployment \
               --application-name "${APPLICATION_NAME}" \
               --deployment-group-name "${DEPLOYMENT_GROUP}" \
-              --revision revisionType=S3,s3Location="{bucketName=${ARTIFACT_BUCKET},key=${S3_KEY},bundleType=zip,version=${VERSION_ID}}" \
+              --revision revisionType=S3,s3Location="{bucket=${ARTIFACT_BUCKET},key=${S3_KEY},bundleType=zip,version=${VERSION_ID}}" \
               --description "MarketConnector ${SOURCE_SHA}" \
               --query "deploymentId" \
               --output text
