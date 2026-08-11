@@ -48,15 +48,37 @@ def test_workflow_uses_oidc_and_exact_project() -> None:
         assert value in content
 
 
-def test_workflow_does_not_deploy_to_ec2() -> None:
+def test_workflow_automates_release_to_marketconnector_ec2() -> None:
+    content = WORKFLOW.read_text(encoding="utf-8-sig")
+
+    required = (
+        "MARKETCONNECTOR_INSTANCE_ID",
+        "aws ec2 describe-instances",
+        "aws ec2 start-instances",
+        "aws ec2 stop-instances",
+        "aws ssm describe-instance-information",
+        "portfolio-marketconnector",
+        "portfolio-marketconnector-ec2",
+        "aws deploy create-deployment",
+        "aws deploy get-deployment",
+        "started_by_workflow",
+        "Restore EC2 state",
+    )
+
+    for value in required:
+        assert value in content
+
+
+def test_workflow_release_remains_no_order() -> None:
     content = WORKFLOW.read_text(encoding="utf-8-sig").lower()
 
     forbidden = (
-        "codedeploy create-deployment",
         "ssm send-command",
-        "ec2 start-instances",
         "connector_buy.py",
         "connector_sell.py",
+        "connector_cancel.py",
+        "connector_modify.py",
+        "connector_strategy_order_execute.py",
         "--execute",
     )
 
