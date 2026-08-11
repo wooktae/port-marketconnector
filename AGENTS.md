@@ -619,6 +619,38 @@ IAM Role, policy와 Scheduler 이름은 운영 식별 정보이며 변경 시 cr
 - token 신규 발급과 강제 Rotation
 - 운영 DB 쓰기를 동반하는 Smoke Test
 
+### 8.9 main Push 자동 Release 기준
+
+main Push는 GitHub Actions Release Trigger이며 `workflow_dispatch` 수동 실행 경로도 유지한다.
+
+전체 자동 흐름은 아래와 같다.
+
+| 단계 | 내용 |
+| --- | --- |
+| Trigger | main Push 또는 수동 실행 |
+| Build | CodeBuild Quality Gate와 Git SHA Versioned ZIP |
+| Artifact | 전용 Private Versioned S3 · S3 Version ID 고정 |
+| Compute 준비 | EC2 상태 확인 · SSM Online 확인 |
+| 배포 | S3 Versioned Revision 기반 CodeDeploy In-place |
+
+EC2 상태 보존 원칙은 아래와 같다.
+
+- 배포 전 EC2 상태를 확인한다.
+- stopped 상태이면 Release를 위해 일시적으로 시작할 수 있다.
+- 이미 running이면 기존 상태를 그대로 유지한다.
+- Workflow가 직접 시작한 EC2만 Release 종료 후 원래 stopped 상태로 복원한다.
+- 이 lifecycle은 배포용 Compute 준비이며 Connector Application 실행이나 주문 실행을 의미하지 않는다.
+
+No-Order Release Boundary를 유지한다.
+
+- ApplicationStart에서 Connector를 자동 실행하지 않는 기존 원칙을 유지한다.
+- Release Workflow에서 SSM SendCommand로 주문을 실행하지 않는다.
+- BUY · SELL · CANCEL · MODIFY entrypoint와 `--execute`를 Release smoke로 실행하지 않는다.
+- 실제 Broker 주문 API 호출 없이 배포를 검증한다.
+- 기존 SSM · Scheduler 기반 Runtime 실행 책임은 유지한다.
+
+OIDC · IAM Action 목록과 AWS 정책 구현 상세는 port-devops 범위이며 이 문서에 기록하지 않는다.
+
 ## 9. 실행 제한
 
 사용자가 명시적으로 요청하지 않는 한 아래 작업을 수행하지 않는다.

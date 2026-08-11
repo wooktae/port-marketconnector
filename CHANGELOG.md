@@ -13,6 +13,38 @@ port-marketconnector 코드와 문서의 주요 변경 이력을 기록한다.
 | 실행 기록 | 실제 수행한 검증만 기록 |
 | 민감정보 | token · 계좌 · 주문번호 · secret · ARN · endpoint 원문 금지 |
 
+## 2026-08-11 — main Push 기반 MarketConnector 자동 Release 완성
+
+### Added
+
+| 항목 | 값 |
+| --- | --- |
+| 자동 Release | main Push GitHub Actions Release Trigger |
+| 수동 경로 | `workflow_dispatch` 실행 유지 |
+| EC2 준비 | 배포 전 EC2 상태 확인 · 필요 시 일시 시작 |
+| EC2 복원 | Workflow가 시작한 EC2만 stopped로 복원 |
+| 자동 배포 연결 | S3 Versioned Revision 기반 CodeDeploy 자동 생성·대기 |
+
+### Changed
+
+| 항목 | 값 |
+| --- | --- |
+| CI Contract | 자동 Release 구조에 맞게 갱신 |
+| Release 흐름 | main Push → CodeBuild → Versioned Artifact → EC2/SSM 준비 → CodeDeploy |
+
+### Security
+
+| 항목 | 결과 |
+| --- | --- |
+| 전체 Pytest | 56개 성공 |
+| CodeBuild | 성공 |
+| Versioned Artifact | 생성·조회 성공 |
+| EC2 상태·SSM Online | 확인 성공 |
+| CodeDeploy In-place | 성공 |
+| No-Order Release Boundary | 유지 |
+| Connector 자동 실행 | 0건 |
+| Broker 주문 API 호출 | 0건 |
+
 ## 2026-08-04 — 주문 경계 안전 강화와 Versioned 운영 배포
 
 ### Added

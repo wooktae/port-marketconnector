@@ -307,7 +307,7 @@ approval gate를 우회하는 기본값이나 자동 실행 fallback을 추가�
 | --- | --- |
 | `appspec.yml` | CodeDeploy EC2 In-place 배포와 Lifecycle Hook 연결 |
 | `requirements.txt` | EC2 Runtime Dependency 기준 |
-| `.github/workflows/marketconnector-codebuild.yml` | GitHub Actions에서 MarketConnector CodeBuild 실행 |
+| `.github/workflows/marketconnector-codebuild.yml` | main Push · 수동 실행 자동 Release · CodeBuild · EC2 상태 준비/복원 · CodeDeploy 연결 |
 
 ### Bundle
 

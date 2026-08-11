@@ -21,7 +21,8 @@
 | 취소 계약 | 전량 0/Y · 부분 수량/N |
 | 상태 보호 | Terminal 상태 단조성 |
 | View API | port-view 조회 연동 |
-| CI | GitHub Actions → CodeBuild |
+| Release Trigger | main Push · `workflow_dispatch` 수동 실행 |
+| CI | GitHub Actions → CodeBuild Quality Gate |
 | 배포 Artifact | Git SHA 기반 Versioned ZIP Bundle |
 | Artifact 저장소 | MarketConnector 전용 Versioning 활성 Private S3 |
 | 배포 방식 | CodeDeploy EC2 In-place |
@@ -361,11 +362,23 @@ MarketConnector는 EC2에서 SSM RunCommand로 실행되는 구조다.
 
 ## DevOps 배포 구조
 
+main Push는 GitHub Actions Release를 자동 실행하고, `workflow_dispatch` 수동 실행 경로도 유지한다.
+
 배포는 committed Git 상태를 기준으로 Artifact를 만들고 CodeDeploy로 EC2에 In-place 반영한다.
 
 ```
-Git Commit → GitHub Actions → CodeBuild → Git SHA ZIP Bundle → S3 Versioned Artifact → CodeDeploy → EC2 In-place
+main Push → GitHub Actions → CodeBuild Quality Gate → Git SHA Versioned ZIP → Private Versioned S3 → EC2 상태 준비 → CodeDeploy EC2 In-place → No-Order Validate
 ```
+
+### EC2 상태 보존
+
+| 항목 | 값 |
+| --- | --- |
+| 배포 전 | EC2 상태 · SSM Online 확인 |
+| stopped | Release 위해 일시 시작 가능 |
+| running | 기존 상태 유지 |
+| 복원 대상 | Workflow가 직접 시작한 EC2만 stopped로 복원 |
+| 의미 | 배포용 Compute 준비 · Connector 실행 아님 |
 
 | 항목 | 값 |
 | --- | --- |
@@ -442,6 +455,20 @@ Hook Script 내부 구현은 `codedeploy/` 파일에서 관리하며 문서에 �
 | 핵심 파일 SHA-256 | 3개 일치 |
 | Runtime 파일 | 보존 |
 | Connector 프로세스 | 0개 |
+| Broker 주문 API | 0건 |
+
+### 2026-08-11 main Push 자동 Release 완성 검증
+
+| 항목 | 결과 |
+| --- | --- |
+| 전체 Pytest | 56개 성공 |
+| CodeBuild Quality Gate | 성공 |
+| Versioned Artifact 생성·조회 | 성공 |
+| EC2 상태 확인 · SSM Online | 성공 |
+| CodeDeploy EC2 In-place | 성공 |
+| main Push 자동 Release | 성공 |
+| No-Order Release Boundary | 유지 |
+| Connector 자동 실행 | 0건 |
 | Broker 주문 API | 0건 |
 
 Deployment ID, SSM Command ID, S3 Version ID와 전체 SHA-256 원문은 기록하지 않는다.
