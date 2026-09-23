@@ -17,6 +17,7 @@ import argparse
 from typing import Optional
 
 from connector_order_common import submit_rvsecncl_order
+from connector_locale import t
 
 SOURCE_VERSION = "connector-order-cancel-1.0.0"
 API_NAME = "order-cancel"
@@ -68,7 +69,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.yes:
-        print("❌ 실제 취소 주문 차단: 실행하려면 --yes를 붙여줘")
+        print(t("❌ Real cancel order blocked: add --yes to execute", "❌ 실제 취소 주문 차단: 실행하려면 --yes를 붙여줘"))
         raise SystemExit(1)
 
     result = cancel_order(

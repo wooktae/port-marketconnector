@@ -24,6 +24,7 @@ from connector_db import (
     update_order_request_after_response,
 )
 from token_manager import check_and_refresh_token, get_access_token
+from connector_locale import t
 
 
 DEFAULT_ORDER_ENDPOINT = "/uapi/domestic-stock/v1/trading/order-cash"
@@ -605,7 +606,7 @@ def _request_api(
 ):
     token = get_access_token()
     if not token:
-        print("❌ 토큰 없음")
+        print(t("❌ No token", "❌ 토큰 없음"))
         return None, None, None
 
     url = f"{BASE_URL}{endpoint}"
@@ -642,7 +643,7 @@ def _request_api(
                 response_message=str(e),
                 is_success=False,
             )
-            print("❌ API 요청 에러:", e)
+            print(t("❌ API request error:", "❌ API 요청 에러:"), e)
             return None, None
 
     res, latency_ms = _send(token)
@@ -651,7 +652,7 @@ def _request_api(
 
     new_tok = check_and_refresh_token(res.text)
     if new_tok:
-        print("🔄 토큰 오류 감지 → 재발급 + 재요청")
+        print(t("🔄 Token error detected → reissue + retry", "🔄 토큰 오류 감지 → 재발급 + 재요청"))
         res, latency_ms = _send(new_tok)
         if res is None:
             return None, None, None
@@ -659,7 +660,7 @@ def _request_api(
     try:
         data = res.json()
     except Exception as e:
-        print("❌ JSON 파싱 실패:", e)
+        print(t("❌ JSON parsing failed:", "❌ JSON 파싱 실패:"), e)
         return res, {"rt_cd": "-1", "msg_cd": "JSON_PARSE_ERROR", "msg1": str(e)}, latency_ms
 
     insert_api_call_log(
@@ -754,7 +755,7 @@ def submit_cash_order(
 
     ord_dvsn, ord_unpr, normalized_method = normalize_order_method(order_method, order_price)
 
-    print(f"\n📌 {request_type} 주문 시작: {stock_code} {qty}주 ({normalized_method})")
+    print(t(f"\n📌 {request_type} order start: {stock_code} {qty} shares ({normalized_method})", f"\n📌 {request_type} 주문 시작: {stock_code} {qty}주 ({normalized_method})"))
 
     account_id = ensure_connector_account(
         account_no=PAPER_ACNT,
@@ -844,9 +845,9 @@ def submit_cash_order(
     )
 
     if ok:
-        print(f"✅ {request_type} 주문 성공")
+        print(t(f"✅ {request_type} order succeeded", f"✅ {request_type} 주문 성공"))
     else:
-        print(f"❌ {request_type} 주문 실패:", data.get("msg1", data))
+        print(t(f"❌ {request_type} order failed:", f"❌ {request_type} 주문 실패:"), data.get("msg1", data))
 
     return {
         "order_request_id": order_request_id,
@@ -1185,7 +1186,7 @@ def submit_rvsecncl_order(
             f"(requested_original={original_order_request_id}, active={active_order['id']})"
         )
     else:
-        print(f"❌ {action_type} 요청 실패:", data.get("msg1", data))
+        print(t(f"❌ {action_type} request failed:", f"❌ {action_type} 요청 실패:"), data.get("msg1", data))
 
     return {
         "order_request_id": order_request_id,

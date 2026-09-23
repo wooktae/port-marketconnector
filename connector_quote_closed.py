@@ -14,6 +14,7 @@ import requests
 from config import APP_KEY, APP_SECRET, BASE_URL
 from connector_db import insert_api_call_log, to_jsonb, upsert_connector_quote_eod
 from token_manager import check_and_refresh_token, get_access_token
+from connector_locale import t
 
 SOURCE_VERSION = "connector-quote-eod-1.0.0"
 API_NAME = "inquire-daily-itemchartprice"
@@ -47,11 +48,11 @@ def get_closed_prices(
     save_db: bool = True,
 ):
     """Queries period quotes and saves EOD quotes to the DB depending on the request option."""
-    print(f"\n📆 기간별 시세 조회: {stock_code}, 기간: {period_div}")
+    print(t(f"\n📆 Period quote query: {stock_code}, period: {period_div}", f"\n📆 기간별 시세 조회: {stock_code}, 기간: {period_div}"))
 
     token = get_access_token()
     if not token:
-        print("❌ 토큰 없음")
+        print(t("❌ No token", "❌ 토큰 없음"))
         return None
 
     url = f"{BASE_URL}{ENDPOINT}"
@@ -77,19 +78,19 @@ def get_closed_prices(
         res = requests.get(url, headers=headers, params=params, timeout=20)
         latency_ms = int((time.time() - started) * 1000)
     except Exception as e:
-        print("❌ 요청 에러:", e)
+        print(t("❌ Request error:", "❌ 요청 에러:"), e)
         return None
 
     new_tok = check_and_refresh_token(res.text)
     if new_tok:
-        print("🔄 토큰 오류 -> 재발급 후 재요청")
+        print(t("🔄 Token error -> reissue then retry", "🔄 토큰 오류 -> 재발급 후 재요청"))
         headers["Authorization"] = f"Bearer {new_tok}"
         res = requests.get(url, headers=headers, params=params, timeout=20)
 
     try:
         data = res.json()
     except Exception as e:
-        print("❌ JSON 파싱 실패:", e)
+        print(t("❌ JSON parsing failed:", "❌ JSON 파싱 실패:"), e)
         return None
 
     insert_api_call_log(
@@ -110,7 +111,7 @@ def get_closed_prices(
 
     prices = data.get("output2")
     if isinstance(prices, list) and prices:
-        print(f"✅ 기간별 시세 조회 성공 (총 {len(prices)}건)")
+        print(t(f"✅ Period quote query succeeded (total {len(prices)} rows)", f"✅ 기간별 시세 조회 성공 (총 {len(prices)}건)"))
 
         if save_db:
             rows = []
@@ -137,11 +138,11 @@ def get_closed_prices(
                 )
 
             upsert_connector_quote_eod(rows)
-            print(f"✅ connector_quote_eod 저장 완료 ({len(rows)}건)")
+            print(t(f"✅ connector_quote_eod saved ({len(rows)} rows)", f"✅ connector_quote_eod 저장 완료 ({len(rows)}건)"))
 
         return prices
 
-    print("❌ 조회 실패:", data)
+    print(t("❌ Query failed:", "❌ 조회 실패:"), data)
     return None
 
 
@@ -169,6 +170,6 @@ if __name__ == "__main__":
     )
 
     if daily:
-        print(f"\n✅ 조회 완료: {args.code}, count={len(daily)}")
+        print(t(f"\n✅ Query complete: {args.code}, count={len(daily)}", f"\n✅ 조회 완료: {args.code}, count={len(daily)}"))
         for item in daily[:5]:
             print(item)

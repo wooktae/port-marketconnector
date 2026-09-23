@@ -8,6 +8,7 @@ import argparse
 from typing import Optional
 
 from connector_order_common import submit_cash_order
+from connector_locale import t
 
 SOURCE_VERSION = "connector-order-sell-1.0.0"
 API_NAME = "order-cash-sell"
@@ -69,7 +70,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.yes:
-        print("❌ 실제 매도 주문 차단: 실행하려면 --yes를 붙여줘")
+        print(t("❌ Real sell order blocked: add --yes to execute", "❌ 실제 매도 주문 차단: 실행하려면 --yes를 붙여줘"))
         raise SystemExit(1)
 
     result = sell_stock(

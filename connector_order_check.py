@@ -16,6 +16,7 @@ import pandas as pd
 import requests
 
 from config import APP_KEY, APP_SECRET, BASE_URL, PAPER_ACNT, ACNT_PRDT_CD
+from connector_locale import t
 
 from connector_db import (
     build_order_event_key,
@@ -315,14 +316,14 @@ def _request_history(account_id: int, token: str, params: dict):
             response_message=str(e),
             is_success=False,
         )
-        print("❌ 조회 요청 에러:", e)
+        print(t("❌ Query request error:", "❌ 조회 요청 에러:"), e)
         return None, None
 
 
 def _call_order_history(account_id: int, params: dict):
     token = get_access_token()
     if not token:
-        print("❌ 토큰 없음")
+        print(t("❌ No token", "❌ 토큰 없음"))
         return None, None, None
 
     # Initial request + up to 2 retries when EGW00201 occurs
@@ -337,18 +338,18 @@ def _call_order_history(account_id: int, params: dict):
 
         new_tok = check_and_refresh_token(res.text)
         if new_tok:
-            print("🔄 토큰 오류 감지 → 재발급 + 재요청")
+            print(t("🔄 Token error detected → reissue + retry", "🔄 토큰 오류 감지 → 재발급 + 재요청"))
             token = new_tok
             res, latency_ms = _request_history(account_id, token, params)
             if res is None:
                 return None, params, latency_ms
 
-        print("📌 주문/체결 조회 Status:", res.status_code)
+        print(t("📌 Order/fill query Status:", "📌 주문/체결 조회 Status:"), res.status_code)
 
         try:
             data = res.json()
         except Exception as e:
-            print("❌ JSON 파싱 실패:", e)
+            print(t("❌ JSON parsing failed:", "❌ JSON 파싱 실패:"), e)
             return None, params, latency_ms
 
         insert_api_call_log(
@@ -519,9 +520,9 @@ def _process_detail_orders(account_id: int, orders: list):
 
     if legacy_rows:
         save_trade_orders_legacy(legacy_rows)
-        print(f"\n✅ trade_orders + connector_order_event + connector_fill 저장 완료 ({len(legacy_rows)}건)")
+        print(t(f"\n✅ trade_orders + connector_order_event + connector_fill saved ({len(legacy_rows)} rows)", f"\n✅ trade_orders + connector_order_event + connector_fill 저장 완료 ({len(legacy_rows)}건)"))
     else:
-        print("\n⚠ 저장할 주문/체결 데이터 없음(detail)")
+        print(t("\n⚠ No order/fill data to save (detail)", "\n⚠ 저장할 주문/체결 데이터 없음(detail)"))
 
     return legacy_rows
 
@@ -605,11 +606,11 @@ def _process_summary_fallback(
     avg_price = _to_float(summary.get("pchs_avg_pric", "0"))
 
     if detail_orders:
-        print("⚠ summary fallback guard: output1 상세행이 있어 fallback 생략")
+        print(t("⚠ summary fallback guard: output1 has detail rows, skipping fallback", "⚠ summary fallback guard: output1 상세행이 있어 fallback 생략"))
         return
 
     if tot_ord_qty <= 0:
-        print("⚠ summary에도 주문수량이 없어 fallback 생략")
+        print(t("⚠ summary has no order quantity either, skipping fallback", "⚠ summary에도 주문수량이 없어 fallback 생략"))
         return
 
     fallback_candidates = _count_summary_fallback_candidates(
@@ -641,7 +642,7 @@ def _process_summary_fallback(
     )
 
     if not context:
-        print("⚠ summary는 있지만 connector_order_request 매핑 실패")
+        print(t("⚠ summary exists but connector_order_request mapping failed", "⚠ summary는 있지만 connector_order_request 매핑 실패"))
         return
 
     order_request_id = context["order_request_id"]
@@ -916,7 +917,7 @@ def reconcile_active_orders(
     active_orders = _find_active_order_contexts(limit=limit)
 
     if not active_orders:
-        print("\n✅ Step 13 skip: active connector order 없음")
+        print(t("\n✅ Step 13 skip: no active connector order", "\n✅ Step 13 skip: active connector order 없음"))
         return 0
 
     max_attempts = poll_count + 1
@@ -1086,15 +1087,15 @@ def fetch_and_save_orders(
     if data is None:
         return None
 
-    print("\n🔹 주문/체결 원본 JSON ↓")
+    print(t("\n🔹 Order/fill raw JSON ↓", "\n🔹 주문/체결 원본 JSON ↓"))
     print(json.dumps(data, indent=2, ensure_ascii=False))
 
     if data.get("rt_cd") != "0":
-        print("❌ 조회 오류:", data.get("msg1"))
+        print(t("❌ Query error:", "❌ 조회 오류:"), data.get("msg1"))
         return None
 
     orders = data.get("output1", []) or []
-    print("\n🔸 direct orders 배열 ↓")
+    print(t("\n🔸 direct orders array ↓", "\n🔸 direct orders 배열 ↓"))
     print(json.dumps(orders, indent=2, ensure_ascii=False))
 
     if orders:
@@ -1121,7 +1122,7 @@ def fetch_and_save_orders(
     if (stock_code or order_no or branch_code) and (
         direct_tot_ord_qty > 0 or direct_tot_ccld_qty > 0 or direct_tot_ccld_amt > 0
     ):
-        print("\n⚠ direct 조회에서 output1은 비었지만 output2 summary가 있어 direct fallback 처리")
+        print(t("\n⚠ direct query output1 empty but output2 summary present, handling direct fallback", "\n⚠ direct 조회에서 output1은 비었지만 output2 summary가 있어 direct fallback 처리"))
         _process_summary_fallback(
             account_id=account_id,
             data=data,
@@ -1132,7 +1133,7 @@ def fetch_and_save_orders(
         return data
 
     if try_broad_search_if_empty and (stock_code or order_no or branch_code):
-        print("\n⚠ direct 조회에서 output1 비었고 direct summary도 부족해. broad search 1회 재시도")
+        print(t("\n⚠ direct query output1 empty and direct summary insufficient. retrying broad search once", "\n⚠ direct 조회에서 output1 비었고 direct summary도 부족해. broad search 1회 재시도"))
 
         broad_params = _build_params(
             start_date=start_date,
@@ -1144,11 +1145,11 @@ def fetch_and_save_orders(
 
         broad_data, _, _ = _call_order_history(account_id, broad_params)
         if broad_data is not None and broad_data.get("rt_cd") == "0":
-            print("\n🔹 broad search 원본 JSON ↓")
+            print(t("\n🔹 broad search raw JSON ↓", "\n🔹 broad search 원본 JSON ↓"))
             print(json.dumps(broad_data, indent=2, ensure_ascii=False))
 
             broad_orders = broad_data.get("output1", []) or []
-            print("\n🔸 broad orders 배열 ↓")
+            print(t("\n🔸 broad orders array ↓", "\n🔸 broad orders 배열 ↓"))
             print(json.dumps(broad_orders, indent=2, ensure_ascii=False))
 
             if broad_orders:
@@ -1167,7 +1168,7 @@ def fetch_and_save_orders(
                     _process_detail_orders(account_id, filtered_orders)
                     return broad_data
                 else:
-                    print("⚠ broad search에서는 상세행이 있었지만 대상 주문과 일치하는 건 없음")
+                    print(t("⚠ broad search had detail rows but none match the target order", "⚠ broad search에서는 상세행이 있었지만 대상 주문과 일치하는 건 없음"))
 
             # If broad also has no detail, fall back based on the broad summary
             _process_summary_fallback(

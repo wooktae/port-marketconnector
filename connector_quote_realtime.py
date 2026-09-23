@@ -14,6 +14,7 @@ import requests
 from config import APP_KEY, APP_SECRET, BASE_URL
 from connector_db import insert_api_call_log, insert_connector_quote_realtime, to_jsonb
 from token_manager import check_and_refresh_token, get_access_token
+from connector_locale import t
 
 SOURCE_VERSION = "connector-quote-realtime-1.0.0"
 API_NAME = "inquire-price"
@@ -41,11 +42,11 @@ def _to_int(v, default=0):
 
 def get_stock_price(stock_code: str, save_db: bool = True):
     """Queries the current price of a single stock and saves it to the DB depending on the request option."""
-    print(f"\n📊 실시간 시세 조회 시작: {stock_code}")
+    print(t(f"\n📊 Real-time quote query start: {stock_code}", f"\n📊 실시간 시세 조회 시작: {stock_code}"))
 
     token = get_access_token()
     if not token:
-        print("❌ 토큰 없음")
+        print(t("❌ No token", "❌ 토큰 없음"))
         return None
 
     url = f"{BASE_URL}{ENDPOINT}"
@@ -67,19 +68,19 @@ def get_stock_price(stock_code: str, save_db: bool = True):
         res = requests.get(url, headers=headers, params=params, timeout=20)
         latency_ms = int((time.time() - started) * 1000)
     except Exception as e:
-        print("❌ 시세 요청 에러:", e)
+        print(t("❌ Quote request error:", "❌ 시세 요청 에러:"), e)
         return None
 
     new_tok = check_and_refresh_token(res.text)
     if new_tok:
-        print("🔄 토큰 오류 감지 → 재발급 + 재요청")
+        print(t("🔄 Token error detected → reissue + retry", "🔄 토큰 오류 감지 → 재발급 + 재요청"))
         headers["Authorization"] = f"Bearer {new_tok}"
         res = requests.get(url, headers=headers, params=params, timeout=20)
 
     try:
         data = res.json()
     except Exception as e:
-        print("❌ JSON 파싱 실패:", e)
+        print(t("❌ JSON parsing failed:", "❌ JSON 파싱 실패:"), e)
         return None
 
     insert_api_call_log(
@@ -137,7 +138,7 @@ def get_stock_price(stock_code: str, save_db: bool = True):
             "raw": data,
         }
 
-    print("❌ 조회 실패:", data)
+    print(t("❌ Query failed:", "❌ 조회 실패:"), data)
     return None
 
 
@@ -153,9 +154,9 @@ if __name__ == "__main__":
     result = get_stock_price(args.code, save_db=not args.no_save)
 
     if result:
-        print("👉 현재가:", result.get("current_price"))
-        print("👉 전일대비:", result.get("diff"))
-        print("👉 거래량:", result.get("volume"))
-        print("👉 시가:", result.get("open"))
-        print("👉 고가:", result.get("high"))
-        print("👉 저가:", result.get("low"))
+        print(t("👉 Current price:", "👉 현재가:"), result.get("current_price"))
+        print(t("👉 Change vs prev close:", "👉 전일대비:"), result.get("diff"))
+        print(t("👉 Volume:", "👉 거래량:"), result.get("volume"))
+        print(t("👉 Open:", "👉 시가:"), result.get("open"))
+        print(t("👉 High:", "👉 고가:"), result.get("high"))
+        print(t("👉 Low:", "👉 저가:"), result.get("low"))
