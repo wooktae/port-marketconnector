@@ -1,7 +1,7 @@
-"""KIS 실시간 현재가 조회와 quote 저장 흐름.
+"""KIS real-time current-price query and quote save flow.
 
-종목 현재가 API를 호출하고 옵션에 따라 connector_quote_realtime 테이블에 저장한다.
-`--no-save` 사용 시에도 외부 API 호출과 token 처리는 발생할 수 있다.
+Calls the stock current-price API and, depending on the option, saves to the connector_quote_realtime table.
+Even when `--no-save` is used, external API calls and token handling can still occur.
 """
 
 import json
@@ -40,7 +40,7 @@ def _to_int(v, default=0):
 
 
 def get_stock_price(stock_code: str, save_db: bool = True):
-    """단일 종목 현재가를 조회하고 요청 옵션에 따라 DB에 저장한다."""
+    """Queries the current price of a single stock and saves it to the DB depending on the request option."""
     print(f"\n📊 실시간 시세 조회 시작: {stock_code}")
 
     token = get_access_token()

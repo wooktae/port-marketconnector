@@ -1,267 +1,267 @@
 # Source File Catalog
 
-port-marketconnector의 주요 파일과 디렉터리 역할을 빠르게 확인하기 위한 문서다.
+A document for quickly checking the roles of the primary files and directories of port-marketconnector.
 
-모든 파일을 나열하는 inventory가 아니라, 구조 이해와 변경 영향 판단에 필요한 항목만 기록한다.
+It is not an inventory that lists every file, but records only the items needed to understand the structure and judge change impact.
 
-repository root 기준 상대 경로를 사용하며 cache, token 파일과 일회성 산출물은 제외한다.
+It uses paths relative to the repository root and excludes cache, token files and one-time outputs.
 
-## 사용 원칙
+## Usage Principles
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
-| 기준 | 현재 port-marketconnector 코드와 운영 구조 |
-| 포함 | 주요 entrypoint · 공통 helper · 운영 영향 파일 |
-| 제외 | cache · token · debug dump · 일회성 output |
-| 갱신 | 파일의 경로 · 책임 · 실행 위험이 바뀔 때 |
-| 생략 | 내부 구현만 바뀌고 파일 책임이 동일한 경우 |
-| 민감정보 | token · 계좌 · secret · ARN · endpoint 원문 금지 |
+| Basis | Current port-marketconnector code and operational structure |
+| Included | Primary entrypoints · common helpers · operationally impactful files |
+| Excluded | cache · token · debug dump · one-time output |
+| Update | When a file's path · responsibility · execution risk changes |
+| Omit | When only internal implementation changes and the file responsibility is the same |
+| Sensitive information | No verbatim token · account · secret · ARN · endpoint |
 
 ## Root
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `AGENTS.md` | MarketConnector 코드와 문서 작업 규칙 |
-| `README.md` | 현재 구조 · 실행 위험 · 운영 AS-IS |
-| `CHANGELOG.md` | 주요 변경 이력 |
-| `config.py` | KIS App Key·Secret·Base URL·Paper 계좌 환경변수 계약 |
-| `db_config.py` | PostgreSQL 환경변수 loader |
+| `AGENTS.md` | MarketConnector code and documentation working rules |
+| `README.md` | Current structure · execution risk · operational AS-IS |
+| `CHANGELOG.md` | Primary change history |
+| `config.py` | KIS App Key·Secret·Base URL·Paper account environment-variable contract |
+| `db_config.py` | PostgreSQL environment-variable loader |
 | `connector_db.py` | DB repository helper |
 
-### 변경 시 확인
+### Check when changing
 
-| 대상 | 확인 |
+| Target | Check |
 | --- | --- |
-| `AGENTS.md` | 주문 gate · 실행 제한 · 문서 갱신 규칙 |
-| `README.md` | 현재 entrypoint와 운영 구조 |
-| `CHANGELOG.md` | 실제 Connector 변경만 기록 |
-| `config.py` | 민감정보 하드코딩 금지 · Runtime 주입 대상 · 배포 후 권한 600 |
-| `db_config.py` | `INTEREST_DB_*`와 password 기본값 |
+| `AGENTS.md` | Order gate · execution restriction · documentation update rules |
+| `README.md` | Current entrypoints and operational structure |
+| `CHANGELOG.md` | Record only actual Connector changes |
+| `config.py` | No sensitive-information hard-coding · Runtime injection targets · permission 600 after deployment |
+| `db_config.py` | `INTEREST_DB_*` and password default |
 | `connector_db.py` | schema · SQL · transaction · mapping |
 
 ## Flask
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `connector_app.py` | 실행 API와 View API route |
-| `connector_view_service.py` | View API 응답 조립 |
+| `connector_app.py` | Execution API and View API routes |
+| `connector_view_service.py` | View API response assembly |
 
-### 실행 API
+### Execution API
 
-| 경로 | 역할 |
+| Path | Role |
 | --- | --- |
-| `/api/v1/quotes/realtime` | 실시간 시세 조회 · 저장 가능 |
-| `/api/v1/quotes/eod` | 기간 시세 조회 · 저장 가능 |
-| `/api/v1/accounts/balance` | 잔고 조회 · Snapshot 저장 |
-| `/api/v1/orders/buy` | 매수 주문 |
-| `/api/v1/orders/sell` | 매도 주문 |
-| `/api/v1/orders/cancel` | 주문 취소 |
-| `/api/v1/orders/modify` | 주문 정정 |
-| `/api/v1/orders/history` | 주문 · 체결 동기화 |
-| `/api/v1/price` | legacy 시세 alias |
+| `/api/v1/quotes/realtime` | Real-time quote query · can save |
+| `/api/v1/quotes/eod` | Period quote query · can save |
+| `/api/v1/accounts/balance` | Balance query · Snapshot save |
+| `/api/v1/orders/buy` | Buy order |
+| `/api/v1/orders/sell` | Sell order |
+| `/api/v1/orders/cancel` | Order cancellation |
+| `/api/v1/orders/modify` | Order modification |
+| `/api/v1/orders/history` | Order · fill synchronization |
+| `/api/v1/price` | legacy quote alias |
 
 ### View API
 
-| 경로 | 역할 |
+| Path | Role |
 | --- | --- |
-| `/api/v1/view/account-summary` | 계좌 요약 |
+| `/api/v1/view/account-summary` | Account summary |
 | `/api/v1/view/dashboard` | Dashboard |
-| `/api/v1/view/balance/latest` | 최신 잔고 |
-| `/api/v1/view/positions/latest` | 최신 포지션 |
-| `/api/v1/view/orders` | 주문 목록 |
-| `/api/v1/view/orders/<order_request_id>` | 주문 상세 |
-| `/api/v1/view/order-events` | 주문 이벤트 |
-| `/api/v1/view/quotes/realtime/latest` | 최신 시세 |
-| `/api/v1/view/quotes/eod` | 기간 시세 |
-| `/api/v1/view/strategy/trades/recent` | 최근 전략 거래 |
+| `/api/v1/view/balance/latest` | Latest balance |
+| `/api/v1/view/positions/latest` | Latest positions |
+| `/api/v1/view/orders` | Order list |
+| `/api/v1/view/orders/<order_request_id>` | Order detail |
+| `/api/v1/view/order-events` | Order events |
+| `/api/v1/view/quotes/realtime/latest` | Latest quote |
+| `/api/v1/view/quotes/eod` | Period quote |
+| `/api/v1/view/strategy/trades/recent` | Recent strategy trades |
 
-### 변경 시 확인
+### Check when changing
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
 | Route | URL · HTTP method · response contract |
-| 실행 API | token · 외부 API · DB side effect |
-| View API | port-view DTO와 하위 호환성 |
-| 보안 | 계좌 · token · 주문번호 노출 여부 |
-| 검증 | 실제 route 호출보다 mock test 우선 |
+| Execution API | token · external API · DB side effect |
+| View API | port-view DTO and backward compatibility |
+| Security | Whether account · token · order number is exposed |
+| Validation | Prefer mock tests over actual route calls |
 
 ## Token
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `token_manager.py` | token 파일 · 발급 · 갱신 · 삭제 |
+| `token_manager.py` | token file · issuance · renewal · deletion |
 
-### 변경 시 확인
+### Check when changing
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
-| Import | import만으로 발급이나 파일 변경 금지 |
-| Log | token 원문 출력 금지 |
-| Failure | 갱신 실패를 성공으로 처리하지 않음 |
-| Test | HTTP와 파일 시스템 mock |
-| 보관 | token 파일 source control 제외 |
+| Import | No issuance or file change on import alone |
+| Log | No verbatim token output |
+| Failure | Do not treat a renewal failure as success |
+| Test | HTTP and file-system mock |
+| Storage | Exclude token files from source control |
 
-## Balance와 Position
+## Balance and Position
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `connector_balance.py` | Daily 잔고와 포지션 Snapshot |
+| `connector_balance.py` | Daily balance and position Snapshot |
 | `connector_intraday_snapshot_refresh.py` | Intraday Snapshot Refresh |
-| `scripts/run_connector_balance_daily.sh` | Daily 잔고 실행 wrapper · Bundle·CodeDeploy 배포 대상 |
-| `scripts/run_intraday_snapshot_and_evaluate.sh` | Snapshot Refresh 이후 Position Evaluate 순차 실행 Intraday wrapper |
+| `scripts/run_connector_balance_daily.sh` | Daily balance execution wrapper · Bundle·CodeDeploy deployment target |
+| `scripts/run_intraday_snapshot_and_evaluate.sh` | Intraday wrapper that runs Position Evaluate sequentially after Snapshot Refresh |
 
-### 주요 저장 대상
+### Primary save targets
 
-| 테이블 | 역할 |
+| Table | Role |
 | --- | --- |
-| `connector.connector_balance_snapshot` | 계좌 Snapshot |
-| `connector.connector_position_snapshot` | 보유 포지션 Snapshot |
-| `connector.connector_api_call_log` | KIS 호출 기록 |
-| legacy balance · holdings | 과거 호환 |
+| `connector.connector_balance_snapshot` | Account Snapshot |
+| `connector.connector_position_snapshot` | Held-position Snapshot |
+| `connector.connector_api_call_log` | KIS call record |
+| legacy balance · holdings | Backward compatibility |
 
-### 변경 시 확인
+### Check when changing
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
-| 빈 보유 | 정상 청산과 API 이상 구분 |
-| OPEN mismatch | 전략 OPEN과 KIS 보유 불일치 |
-| stale 정리 | 계좌 · 기준일 범위 |
-| 기준 시각 | balance와 position 정합 |
-| DB user | Connector 쓰기 권한 사용 |
+| Empty holdings | Distinguish normal liquidation from API anomaly |
+| OPEN mismatch | Mismatch between strategy OPEN and KIS holdings |
+| stale cleanup | Account · reference-date scope |
+| Reference time | balance and position consistency |
+| DB user | Use Connector write privileges |
 
 ## Quote
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `connector_quote_realtime.py` | 현재가 · 실시간 시세 |
-| `connector_quote_closed.py` | 기간 시세 · EOD upsert |
+| `connector_quote_realtime.py` | Current-price · real-time quote |
+| `connector_quote_closed.py` | Period quote · EOD upsert |
 
-### 변경 시 확인
+### Check when changing
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
-| `--no-save` | DB 저장만 차단 가능 |
-| KIS 호출 | 옵션과 별개로 발생 가능 |
-| Token | 발급 · 갱신 가능성 |
-| Mapping | 현재가와 EOD 필드 의미 |
-| Upsert | key와 거래일 기준 |
+| `--no-save` | May block only the DB save |
+| KIS call | Can occur regardless of the option |
+| Token | Possibility of issuance · renewal |
+| Mapping | Meaning of current-price and EOD fields |
+| Upsert | key and trading-day basis |
 
-## 주문 공통
+## Order Common
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `connector_order_common.py` | 주문 수량 정규화 · Fatal Max · 취소/정정 resolver · 상태 전이 Guard · broker 공통 처리 |
-| `connector_buy.py` | 매수 주문 wrapper |
-| `connector_sell.py` | 매도 주문 wrapper |
-| `connector_cancel.py` | 전량 0/Y · 부분 수량/N 계약을 적용하는 취소 wrapper |
-| `connector_modify.py` | 전량·부분 수량 계약을 적용하는 정정 wrapper |
+| `connector_order_common.py` | Order-quantity normalization · Fatal Max · cancel/modify resolver · state-transition Guard · broker common processing |
+| `connector_buy.py` | Buy order wrapper |
+| `connector_sell.py` | Sell order wrapper |
+| `connector_cancel.py` | Cancellation wrapper applying the full 0/Y · partial quantity/N contract |
+| `connector_modify.py` | Modification wrapper applying the full·partial quantity contract |
 
-### 변경 시 확인
+### Check when changing
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
-| Idempotency | 기존 order request 상태 확인 |
-| Retry | 주문 자동 retry 금지 |
-| TR ID | paper/live와 요청 유형 정합 |
-| Status | 요청 · 접수 · 체결 · 거절 구분 |
-| Log | broker 주문번호 전체 노출 금지 |
-| Quantity | 1 이상 정수 · Boolean·소수 차단 |
-| Fatal Max | 초과 수량 자동 축소 금지 |
-| Cancel/Modify | 전량 0/Y · 부분 수량/N |
-| Terminal Status | 허용된 이전 상태 조건부 UPDATE |
-| Side Effect | 검증 실패 시 Broker·token·DB 후속 호출 차단 |
-| Test | Property · 경계 · 호출 횟수 검증 |
+| Idempotency | Verify the existing order request state |
+| Retry | No automatic order retry |
+| TR ID | paper/live and request-type consistency |
+| Status | Distinguish request · acceptance · fill · rejection |
+| Log | No full broker order number exposure |
+| Quantity | Integer of 1 or greater · block Boolean·fractional |
+| Fatal Max | No automatic reduction of excess quantity |
+| Cancel/Modify | Full 0/Y · partial quantity/N |
+| Terminal Status | Conditional UPDATE from an allowed previous state |
+| Side Effect | Block Broker·token·DB follow-up calls on validation failure |
+| Test | Property · boundary · call-count validation |
 
-## 주문과 체결 동기화
+## Order and Fill Synchronization
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `connector_order_check.py` | 주문 이벤트 · 체결 · legacy 주문 동기화 |
+| `connector_order_check.py` | Order event · fill · legacy order synchronization |
 
-### 주요 저장 대상
+### Primary save targets
 
-| 테이블 | 역할 |
+| Table | Role |
 | --- | --- |
-| `connector.connector_order_event` | 주문 상태 이벤트 |
-| `connector.connector_fill` | 체결 |
-| `connector.connector_api_call_log` | API 호출 기록 |
-| legacy trade orders | 과거 호환 |
+| `connector.connector_order_event` | Order status events |
+| `connector.connector_fill` | Fills |
+| `connector.connector_api_call_log` | API call record |
+| legacy trade orders | Backward compatibility |
 
-### 변경 시 확인
+### Check when changing
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
-| Direct | 특정 주문 조회 우선 |
+| Direct | Prioritize the specific-order query |
 | Summary | direct `output2` fallback |
-| Broad | direct 처리 후 검색 |
-| Mapping | broker 번호와 order request |
-| 오귀속 | broad summary를 특정 주문에 연결 금지 |
+| Broad | Search after direct handling |
+| Mapping | broker number and order request |
+| Misattribution | Do not link a broad summary to a specific order |
 
-## Daily 전략 주문
+## Daily Strategy Order
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `connector_strategy_order_execute.py` | 승인된 전략 주문 제출 · Execution Order 원자적 Claim · 중복 Broker 제출 차단 · 수량과 Fatal Max 검증 · Broker 결과와 상태 동기화 · 단위 실패 격리 |
+| `connector_strategy_order_execute.py` | Approved strategy order submission · Execution Order atomic Claim · block duplicate Broker submission · quantity and Fatal Max validation · Broker result and state synchronization · unit-failure isolation |
 
-### 운영 기준
+### Operational standards
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
-| 기본 | dry run |
-| 실제 주문 | `--execute` |
-| 승인 gate | `portfolio-paper-daily-step12-17-approval` |
+| Default | dry run |
+| Real order | `--execute` |
+| Approval gate | `portfolio-paper-daily-step12-17-approval` |
 | Claim | `REQUESTED → SUBMITTING` |
-| Broker 호출 | Claim 성공 주문만 |
-| 중복 주문 | Claim 0행이면 skip |
-| 상태 실패 | Broker 성공으로 출력하지 않음 |
-| Batch | 단위 실패 후 후속 대상 계속 |
-| 저장 | order request · API call log |
-| 후속 | `connector_order_check.py` |
+| Broker call | Only for successfully claimed orders |
+| Duplicate order | Skip if Claim is 0 rows |
+| State failure | Do not report as Broker success |
+| Batch | Continue with follow-up targets after a unit failure |
+| Save | order request · API call log |
+| Follow-up | `connector_order_check.py` |
 
-approval gate를 우회하는 기본값이나 자동 실행 fallback을 추가하지 않는다.
+Do not add a default or automatic-execution fallback that bypasses the approval gate.
 
 ## Intraday hard stop
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `connector_intraday_position_evaluate.py` | OPEN 포지션 hard stop 판단 |
+| `connector_intraday_position_evaluate.py` | OPEN position hard stop evaluation |
 
-### 책임 경계
+### Responsibility boundary
 
-| 단계 | 책임 |
+| Stage | Responsibility |
 | --- | --- |
 | Snapshot | `connector_intraday_snapshot_refresh.py` |
-| 판단 | `connector_intraday_position_evaluate.py` |
-| 결과 | `execution.strategy_intraday_position_check` |
-| 주문 후보 | `execution.strategy_execution_order` READY 매도 |
-| 알림 | event notifier Lambda |
-| 실제 매도 | approval workflow 이후 |
+| Evaluation | `connector_intraday_position_evaluate.py` |
+| Result | `execution.strategy_intraday_position_check` |
+| Order candidate | `execution.strategy_execution_order` READY sell |
+| Notification | event notifier Lambda |
+| Actual sell | After the approval workflow |
 
-판단 entrypoint에 broker 주문 제출 로직을 추가하지 않는다.
+Do not add broker order submission logic to the evaluation entrypoint.
 
 ## Database Contract
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
 | Database | `portfolio` |
 | Config loader | `db_config.py` · `get_db_config()` |
-| 환경변수 | `INTEREST_DB_*` |
-| Password | 기본값 없음 |
+| Environment variables | `INTEREST_DB_*` |
+| Password | No default |
 | search path | `connector, execution, legacy, reference, public` |
 
-### Schema 책임
+### Schema responsibilities
 
-| Schema | 역할 |
+| Schema | Role |
 | --- | --- |
-| `connector` | 계좌 · Snapshot · 시세 · 주문 · 체결 |
-| `execution` | 전략 주문 · position · intraday check |
-| `legacy` | 과거 호환 |
-| `reference` | 종목과 공통 기준정보 |
+| `connector` | Account · Snapshot · quote · order · fill |
+| `execution` | Strategy order · position · intraday check |
+| `legacy` | Backward compatibility |
+| `reference` | Stock and common reference data |
 | `public` | fallback search path |
 
-### 주요 쓰기 대상
+### Primary write targets
 
-| 영역 | 테이블 |
+| Area | Table |
 | --- | --- |
 | API Log | `connector.connector_api_call_log` |
 | Balance | `connector.connector_balance_snapshot` |
@@ -273,23 +273,23 @@ approval gate를 우회하는 기본값이나 자동 실행 fallback을 추가�
 | Strategy Order | `execution.strategy_execution_order` |
 | Intraday Check | `execution.strategy_intraday_position_check` |
 
-추정 table과 column으로 SQL을 작성하지 않는다.
+Do not write SQL using assumed tables and columns.
 
-기존 unqualified SQL은 connection `search_path`와 정합성을 확인한다.
+Verify that existing unqualified SQL is consistent with the connection `search_path`.
 
-## EC2와 SSM
+## EC2 and SSM
 
-| 항목 | 역할 |
+| Item | Role |
 | --- | --- |
-| MarketConnector EC2 | Python entrypoint 실행 |
-| SSM RunCommand | Daily · Intraday 원격 실행 |
-| EventBridge Scheduler | EC2 lifecycle · 장중 주기 |
-| Step Functions | Daily와 매도 approval |
-| Event Notifier Lambda | 운영 알림 |
+| MarketConnector EC2 | Runs Python entrypoints |
+| SSM RunCommand | Daily · Intraday remote execution |
+| EventBridge Scheduler | EC2 lifecycle · intraday interval |
+| Step Functions | Daily and sell approval |
+| Event Notifier Lambda | Operational notification |
 
-### 운영 식별자
+### Operational identifiers
 
-| 항목 | 이름 |
+| Item | Name |
 | --- | --- |
 | EC2 Role | `portfolio-paper-marketconnector-ec2-role` |
 | Lambda policy | `portfolio-paper-marketconnector-event-notifier-invoke` |
@@ -297,118 +297,118 @@ approval gate를 우회하는 기본값이나 자동 실행 fallback을 추가�
 | Stop Scheduler | `portfolio-paper-marketconnector-stop-1550-kst` |
 | Intraday Scheduler | `portfolio-paper-intraday-snapshot-evaluate-10min-kst` |
 
-실제 ARN, instance id, command id, account-id와 endpoint는 기록하지 않는다.
+Do not record actual ARNs, instance ids, command ids, account-id and endpoints.
 
-## DevOps와 배포
+## DevOps and Deployment
 
-### Root 배포 파일
+### Root deployment files
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `appspec.yml` | CodeDeploy EC2 In-place 배포와 Lifecycle Hook 연결 |
-| `requirements.txt` | EC2 Runtime Dependency 기준 |
-| `.github/workflows/marketconnector-codebuild.yml` | main Push · 수동 실행 자동 Release · CodeBuild · EC2 상태 준비/복원 · CodeDeploy 연결 |
+| `appspec.yml` | CodeDeploy EC2 In-place deployment and Lifecycle Hook wiring |
+| `requirements.txt` | EC2 Runtime Dependency baseline |
+| `.github/workflows/marketconnector-codebuild.yml` | main Push · manual-run automatic Release · CodeBuild · EC2 state preparation/restoration · CodeDeploy wiring |
 
 ### Bundle
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `.devops/bundle/include.txt` | Versioned ZIP에 포함할 배포 파일 Manifest |
-| `.devops/scripts/build_bundle.py` | committed Git blob 기반 Versioned ZIP과 Manifest 생성 |
-| `.devops/codebuild/buildspec.yml` | Compile · Test · Ruff · Bundle · S3 업로드 Phase |
-| `.devops/scripts/compile_check.py` | 안전한 Python Compile 검사 |
+| `.devops/bundle/include.txt` | Manifest of deployment files to include in the Versioned ZIP |
+| `.devops/scripts/build_bundle.py` | Create the committed Git blob-based Versioned ZIP and Manifest |
+| `.devops/codebuild/buildspec.yml` | Compile · Test · Ruff · Bundle · S3 upload Phase |
+| `.devops/scripts/compile_check.py` | Safe Python Compile check |
 
-`.devops/artifacts` 산출물과 일회성 Artifact는 카탈로그에 나열하지 않는다.
+Do not list `.devops/artifacts` outputs and one-time Artifacts in the catalog.
 
 ### CodeDeploy Hook
 
-`appspec.yml`이 참조하는 상대 경로 기준이다.
+Based on the relative paths referenced by `appspec.yml`.
 
-| 파일 | 역할 |
+| File | Role |
 | --- | --- |
-| `codedeploy/application_stop.sh` | 실행 프로세스와 배포 안전 상태 확인 |
-| `codedeploy/before_install.sh` | Deployment Lock과 기존 Source Backup |
-| `codedeploy/after_install.sh` | Bundle 설치 · 권한 적용 · Runtime 파일 보존 |
-| `codedeploy/application_start.sh` | 자동 시작 없이 안전 상태 유지 |
-| `codedeploy/validate_service.sh` | Compile · Wrapper Syntax · 필수 파일 · 단일 실행 · Lock 해제 검증 |
+| `codedeploy/application_stop.sh` | Verify running processes and deployment-safe state |
+| `codedeploy/before_install.sh` | Deployment Lock and existing Source Backup |
+| `codedeploy/after_install.sh` | Bundle install · apply permissions · preserve Runtime files |
+| `codedeploy/application_start.sh` | Keep the safe state without automatic start |
+| `codedeploy/validate_service.sh` | Validate Compile · Wrapper Syntax · required files · single execution · Lock release |
 
-### 변경 시 확인
+### Check when changing
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
-| Bundle Include 변경 | Contract Test 갱신 |
-| Hook 변경 | `appspec.yml` 참조 정합성 확인 |
-| Shell 변경 | LF와 `bash -n` 확인 |
-| Runtime 파일 | Bundle 미포함 확인 |
-| Source·Bundle | Source SHA와 Bundle Version 정합성 확인 |
-| Hook 실행 | Connector·주문 자동 실행 없음 확인 |
-| Rollback | token 파일 보존 확인 |
-| Artifact Store | MarketConnector 전용 Versioned S3 |
-| Revision | Bucket · Key · Version ID 고정 |
-| Manifest | Source SHA 확인 |
-| 운영 Source | Manifest SHA-256과 실제 파일 비교 |
-| Runtime 보호 | `config.py` · token 파일 보존 |
-| 무주문 검증 | Connector 프로세스와 Broker 호출 0건 |
+| Bundle Include change | Update the Contract Test |
+| Hook change | Verify `appspec.yml` reference consistency |
+| Shell change | Verify LF and `bash -n` |
+| Runtime files | Verify exclusion from the Bundle |
+| Source·Bundle | Verify Source SHA and Bundle Version consistency |
+| Hook execution | Verify no automatic Connector·order execution |
+| Rollback | Verify token-file preservation |
+| Artifact Store | MarketConnector-dedicated Versioned S3 |
+| Revision | Fixed Bucket · Key · Version ID |
+| Manifest | Verify Source SHA |
+| Operating Source | Compare Manifest SHA-256 with actual files |
+| Runtime protection | Preserve `config.py` · token file |
+| No-order validation | 0 Connector processes and Broker calls |
 
 ## Tests
 
-| 변경 | 검증 |
+| Change | Validation |
 | --- | --- |
-| Python 문법 | 안전한 compile check |
-| 순수 함수 | unit test |
-| Flask route | test client · 외부 의존 mock |
+| Python syntax | Safe compile check |
+| Pure functions | unit test |
+| Flask route | test client · external-dependency mock |
 | KIS parsing | HTTP response mock |
-| Token | HTTP · 파일 mock |
-| 주문 | dry-run · idempotency · 원자적 Claim · 중복 차단 |
-| 주문 수량 | 수량 Property Test · Fatal Max |
-| 취소·정정 | 전량·부분 취소 Contract |
-| 주문 상태 | Terminal 상태 단조성 |
-| 호출 횟수 | Broker·token·DB 호출 횟수 |
+| Token | HTTP · file mock |
+| Order | dry-run · idempotency · atomic Claim · duplicate block |
+| Order quantity | Quantity Property Test · Fatal Max |
+| Cancel·modify | Full·partial cancellation Contract |
+| Order status | Terminal state monotonicity |
+| Call count | Broker·token·DB call count |
 | Repository | SQL · parameter · transaction |
-| Shell | syntax · 인자 전달 정적 확인 |
-| 문서 | 링크 · 사실 · 가독성 |
+| Shell | syntax · argument-passing static check |
+| Documentation | Links · facts · readability |
 
-실제 KIS, token, 계좌, DB와 Lambda를 테스트에 사용하지 않는다.
+Do not use real KIS, token, account, DB and Lambda in tests.
 
 ## Documents
 
-| 문서 | 역할 |
+| Document | Role |
 | --- | --- |
-| `AGENTS.md` | MarketConnector 작업 규칙 |
-| `README.md` | 현재 구조와 운영 AS-IS |
-| `CHANGELOG.md` | 주요 변경 이력 |
-| `docs/source-file-catalog.md` | 주요 파일과 책임 |
+| `AGENTS.md` | MarketConnector working rules |
+| `README.md` | Current structure and operational AS-IS |
+| `CHANGELOG.md` | Primary change history |
+| `docs/source-file-catalog.md` | Primary files and responsibilities |
 
-날짜별 `docs/worklog/*.md`는 신규 생성하지 않는다.
+Do not create date-specific `docs/worklog/*.md` files.
 
-과거 worklog 파일을 유지하는 경우 역사 기록으로만 취급하고 신규 작업 기준으로 사용하지 않는다.
+When keeping past worklog files, treat them only as historical records and do not use them as a baseline for new work.
 
-## 외부 의존 모듈
+## External Dependency Modules
 
-| 모듈 | 관계 |
+| Module | Relationship |
 | --- | --- |
-| `port-view` | Connector 조회 API 소비 |
-| `port-interest-crawler` | 원천 데이터 수집 |
-| `port-interest-preprocessor` | 전처리 |
-| `port_strategy_common` | 공통 전략 모델 |
-| `port_strategy_research` | 전략 연구 |
-| `port_strategy_decision` | 전략 판단 |
-| `port_strategy_execution` | 주문 계획과 실행 상태 |
+| `port-view` | Consumes the Connector query API |
+| `port-interest-crawler` | Source data collection |
+| `port-interest-preprocessor` | Preprocessing |
+| `port_strategy_common` | Common strategy model |
+| `port_strategy_research` | Strategy research |
+| `port_strategy_decision` | Strategy decision |
+| `port_strategy_execution` | Order planning and execution state |
 
-다른 MS의 내부 코드와 문서는 MarketConnector 변경 범위에 자동 포함하지 않는다.
+The internal code and documentation of other MSes are not automatically included in the MarketConnector change scope.
 
-## 카탈로그 갱신 조건
+## Catalog Update Conditions
 
-| 변경 | 처리 |
+| Change | Handling |
 | --- | --- |
-| 주요 Python 파일 생성 · 삭제 · 이름 변경 | 갱신 |
-| Flask route와 entrypoint 책임 변경 | 갱신 |
-| package · scripts 구조 변경 | 갱신 |
-| token · 설정 · DB loader 역할 변경 | 갱신 |
-| EC2 · SSM wrapper 역할 변경 | 갱신 |
-| 문서 생성 · 삭제 · 역할 변경 | 갱신 |
-| 내부 구현만 변경 · 책임 동일 | 생략 가능 |
+| Create · delete · rename a primary Python file | Update |
+| Change Flask route and entrypoint responsibility | Update |
+| Change the package · scripts structure | Update |
+| Change token · configuration · DB loader roles | Update |
+| Change EC2 · SSM wrapper roles | Update |
+| Create · delete a document or change its role | Update |
+| Change only internal implementation · same responsibility | May be omitted |
 
-카탈로그 갱신 시 전체 repository inventory를 새로 만들지 않는다.
+When updating the catalog, do not create a new full repository inventory.
 
-변경된 영역과 인접 항목만 확인한다.
+Check only the changed area and adjacent items.

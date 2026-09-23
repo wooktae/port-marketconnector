@@ -1,7 +1,7 @@
-"""KIS 국내 주식 주문 정정 wrapper.
+"""KIS domestic stock order modification wrapper.
 
-원 주문 요청 ID를 기준으로 broker 주문 context를 찾아 정정 요청을 제출한다.
-CLI 실행 시 외부 주문 정정 API 호출과 DB 상태 갱신이 발생할 수 있다.
+Finds the broker order context by the original order request ID and submits a modification request.
+CLI execution can trigger an external order-modification API call and a DB state update.
 """
 
 import argparse
@@ -12,10 +12,10 @@ from connector_order_common import submit_rvsecncl_order
 SOURCE_VERSION = "connector-order-modify-1.0.0"
 API_NAME = "order-modify"
 
-# 중요:
-# 아래 2개는 네 KIS 문서 기준으로 확인 필요
+# Important:
+# The two values below need to be confirmed against your KIS documentation
 TR_ID = "VTTC0803U"
-RVSE_CNCL_DVSN_CD = "01"   # 일반적으로 정정 코드로 많이 쓰는 값. 환경 문서 확인 필요
+RVSE_CNCL_DVSN_CD = "01"   # A value commonly used as the modification code. Confirm against the environment documentation
 
 
 def modify_order(
@@ -25,7 +25,7 @@ def modify_order(
     order_price: Optional[float] = None,
     reason: Optional[str] = None,
 ):
-    """원 주문 요청 ID 기준으로 정정 주문을 제출한다."""
+    """Submits a modification order based on the original order request ID."""
     return submit_rvsecncl_order(
         action_type="MODIFY",
         api_name=API_NAME,

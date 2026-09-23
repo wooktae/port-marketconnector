@@ -1,7 +1,7 @@
-"""Flask View API용 조회 응답 조립 서비스.
+"""Query response assembly service for the Flask View API.
 
-DB repository helper의 조회 결과를 JSON 응답에 맞게 직렬화하고 timeline/tree 형태로 재구성한다.
-브로커 API 호출은 하지 않지만 DB 조회에 의존한다.
+Serializes the query results of DB repository helpers for JSON responses and reshapes them into timeline/tree form.
+It does not call the broker API but depends on DB queries.
 """
 
 from datetime import date, datetime
@@ -160,9 +160,9 @@ def _build_tree_order_request_ids(
     children: List[Dict[str, Any]],
 ) -> List[int]:
     """
-    root 주문 + child 주문들의 order_request_id 목록 생성.
+    Builds the list of order_request_id for the root order + child orders.
 
-    예:
+    Example:
     request 10
     children 11, 12
     => [10, 11, 12]
@@ -177,7 +177,7 @@ def _build_tree_order_request_ids(
         if child_id is not None:
             ids.append(int(child_id))
 
-    # 중복 제거 + 순서 유지
+    # Deduplicate + preserve order
     seen = set()
     unique_ids = []
     for order_id in ids:
@@ -189,9 +189,9 @@ def _build_tree_order_request_ids(
 
 def _fetch_order_tree_events(order_request_ids: List[int]) -> List[Dict[str, Any]]:
     """
-    root 주문 + child 주문들의 이벤트를 한 번에 조회.
+    Queries the events of the root order + child orders at once.
 
-    View Order Detail에서 전체 lifecycle timeline을 만들기 위한 용도.
+    Used to build the full lifecycle timeline in the View Order Detail.
     """
     if not order_request_ids:
         return []
@@ -243,7 +243,7 @@ def _fetch_order_tree_events(order_request_ids: List[int]) -> List[Dict[str, Any
 
 def _fetch_order_tree_fills(order_request_ids: List[int]) -> List[Dict[str, Any]]:
     """
-    root 주문 + child 주문들의 체결 내역을 한 번에 조회.
+    Queries the fills of the root order + child orders at once.
     """
     if not order_request_ids:
         return []
@@ -293,12 +293,12 @@ def _build_order_detail_timeline(
     fills: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """
-    주문 상세 화면용 통합 timeline 생성.
+    Builds the unified timeline for the order detail screen.
 
-    포함:
-    - REQUEST: 원주문 / 정정주문 / 취소주문 요청
-    - EVENT: 브로커 조회 기반 주문 이벤트
-    - FILL: 체결 내역
+    Includes:
+    - REQUEST: original / modification / cancellation order requests
+    - EVENT: broker-query-based order events
+    - FILL: fill history
     """
     timeline = []
 
@@ -400,7 +400,7 @@ def _build_order_detail_timeline(
             }
         )
 
-    # sort_ts 기준 정렬
+    # Sort by sort_ts
     timeline.sort(
         key=lambda x: (
             x.get("sort_ts") is None,
@@ -411,7 +411,7 @@ def _build_order_detail_timeline(
         )
     )
 
-    # JSON 직렬화
+    # JSON serialization
     return _serialize_list(timeline)
 
 def _get_tree_final_status(
@@ -478,7 +478,7 @@ def _build_timeline_summary(timeline: List[Dict[str, Any]]) -> str:
     return " -> ".join(parts)
 
 def get_view_order_detail(order_request_id: int) -> Optional[Dict[str, Any]]:
-    """단일 주문 요청의 부모/자식 주문, event, fill 정보를 상세 timeline으로 조립한다."""
+    """Assembles the parent/child order, event and fill information of a single order request into a detailed timeline."""
     detail = get_order_request_detail(order_request_id)
     if not detail:
         return None
@@ -486,14 +486,14 @@ def get_view_order_detail(order_request_id: int) -> Optional[Dict[str, Any]]:
     request_row = detail["request"]
     children = detail.get("children", [])
 
-    # root 주문 + child 주문 전체 id
+    # All ids of the root order + child orders
     tree_order_request_ids = _build_tree_order_request_ids(
         request_row=request_row,
         children=children,
     )
 
-    # 기존 detail["events"], detail["fills"] 대신
-    # root + children 전체 이벤트/체결을 다시 조회
+    # Instead of the existing detail["events"], detail["fills"],
+    # re-query the full events/fills of root + children
     events = _fetch_order_tree_events(tree_order_request_ids)
     fills = _fetch_order_tree_fills(tree_order_request_ids)
 
@@ -637,12 +637,12 @@ def get_view_order_detail(order_request_id: int) -> Optional[Dict[str, Any]]:
 
 def get_view_account_summary(account_no: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    View Dashboard 상단 계좌 요약용.
+    For the account summary at the top of the View Dashboard.
 
-    기준:
-    - connector_position_snapshot의 최신 as_of_date 기준
-    - account_no가 있으면 해당 계좌만
-    - account_no가 없으면 계좌별 최신 요약 전체 반환
+    Basis:
+    - Based on the latest as_of_date of connector_position_snapshot
+    - If account_no is given, only that account
+    - If account_no is absent, return the full latest summary per account
     """
     where_sql = ""
     params = []
@@ -714,12 +714,12 @@ def get_view_order_events(
     offset: int = 0,
 ) -> Dict[str, Any]:
     """
-    View 주문 이벤트 목록용.
+    For the View order event list.
 
-    목적:
-    - 주문 요청이 실제 이벤트로 어떻게 변했는지 확인
-    - 접수/체결/취소/정정 이벤트 확인
-    - 중복 event_key 여부 확인
+    Purpose:
+    - Check how an order request actually changed into events
+    - Check acceptance/fill/cancellation/modification events
+    - Check for duplicate event_key
     """
     where = ["1 = 1"]
     params = []
@@ -798,12 +798,12 @@ def get_view_strategy_trades_recent(
     offset: int = 0,
 ) -> Dict[str, Any]:
     """
-    View 전략 거래 로그 목록용.
+    For the View strategy trade log list.
 
-    목적:
-    - Strategy Research/Backtest의 최근 거래 확인
-    - 매수/매도 근거 buy_info/sell_info 확인
-    - View에서 Strategy 결과와 Connector 주문을 나중에 연결하기 위한 기반
+    Purpose:
+    - Check recent trades from Strategy Research/Backtest
+    - Check the buy/sell rationale buy_info/sell_info
+    - Basis for later linking Strategy results with Connector orders in the View
     """
     where = ["1 = 1"]
     params = []
@@ -906,7 +906,7 @@ def get_view_eod_quotes(
 ) -> Dict[str, Any]:
     rows = get_eod_quotes(ticker_code=ticker_code, limit=limit, period_div=period_div)
 
-    # 화면 차트용은 오래된 순으로 주는 게 보통 편함
+    # For screen charts it is usually more convenient to return oldest-first
     rows = list(reversed(rows))
 
     return {

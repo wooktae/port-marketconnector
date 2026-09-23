@@ -1,7 +1,7 @@
-"""KIS 주문/체결 조회와 DB 동기화 흐름.
+"""KIS order/fill query and DB synchronization flow.
 
-주문/체결 내역 API 응답을 order event, fill, legacy 주문 테이블에 반영한다.
-직접 조회 결과와 broad search fallback을 구분해 broker 주문번호 매핑을 보정한다.
+Reflects the order/fill history API response into the order event, fill and legacy order tables.
+Distinguishes direct query results from the broad search fallback to correct broker order-number mapping.
 """
 
 import json
@@ -127,21 +127,21 @@ def _find_latest_order_context(
     branch_code: Optional[str] = None,
 ):
     """
-    summary fallback용 주문 context 탐색.
+    Searches the order context for the summary fallback.
 
-    우선순위:
-    1) order_no가 있으면 broker_order_no 기준
-    2) stock_code가 있으면 ticker_code 기준 최신 주문
-    3) 아무 조건도 없으면 당일 ACCEPTED/SUBMITTED 상태의 최신 BUY/SELL 주문
+    Priority:
+    1) If order_no is present, by broker_order_no
+    2) If stock_code is present, the latest order by ticker_code
+    3) If no condition is present, the latest BUY/SELL order in ACCEPTED/SUBMITTED status for the day
 
-    핵심:
-    - request_type은 현재 row의 타입이다. BUY / SELL / MODIFY / CANCEL 가능.
-    - trade_side는 parent chain을 따라 올라가서 찾은 원 주문의 BUY / SELL 방향이다.
-    - MODIFY / CANCEL 이벤트의 side는 request_type이 아니라 trade_side를 사용해야 한다.
+    Key points:
+    - request_type is the type of the current row. Can be BUY / SELL / MODIFY / CANCEL.
+    - trade_side is the BUY / SELL direction of the original order found by walking up the parent chain.
+    - The side of a MODIFY / CANCEL event must use trade_side, not request_type.
 
-    주의:
-    - psycopg3 + PostgreSQL에서 "%s IS NULL" 형태는 파라미터 타입 추론 실패 가능.
-    - 그래서 선택 조건 파라미터는 반드시 %s::text 또는 NULLIF(%s::text, '') 형태로 캐스팅한다.
+    Note:
+    - In psycopg3 + PostgreSQL, the "%s IS NULL" form can fail parameter type inference.
+    - Therefore, optional-condition parameters must be cast as %s::text or NULLIF(%s::text, '').
     """
 
     base_select = """
@@ -244,7 +244,7 @@ def _find_latest_order_context(
                     return _row_to_order_context(row)
 
             # -------------------------------------------------
-            # 인자 없이 실행한 경우에도 당일 ACCEPTED/SUBMITTED 주문을 잡는다.
+            # Even when run without arguments, capture the day's ACCEPTED/SUBMITTED orders.
             # -------------------------------------------------
             where_clause = """
                 request_type IN ('BUY', 'SELL')
@@ -273,10 +273,10 @@ def _build_params(
         "ACNT_PRDT_CD": ACNT_PRDT_CD,
         "INQR_STRT_DT": start_date,
         "INQR_END_DT": end_date,
-        "SLL_BUY_DVSN_CD": "00",   # 전체
+        "SLL_BUY_DVSN_CD": "00",   # All
         "INQR_DVSN": "00",
         "PDNO": stock_code or "",
-        "CCLD_DVSN": "00",         # 전체
+        "CCLD_DVSN": "00",         # All
         "ORD_GNO_BRNO": branch_code or "",
         "ODNO": order_no or "",
         "INQR_DVSN_3": "00",
@@ -325,7 +325,7 @@ def _call_order_history(account_id: int, params: dict):
         print("❌ 토큰 없음")
         return None, None, None
 
-    # 최초 요청 + EGW00201 발생 시 최대 2회 재시도
+    # Initial request + up to 2 retries when EGW00201 occurs
     max_rate_limit_retries = 2
     rate_limit_retry_wait_seconds = (1.5, 5.0)
     rate_limit_retry_count = 0
@@ -532,13 +532,13 @@ def _count_summary_fallback_candidates(
     branch_code: Optional[str] = None,
 ):
     """
-    output1 empty + output2 summary fallback 적용 가능 후보를 계산한다.
+    Computes candidates eligible for the output1 empty + output2 summary fallback.
 
-    안전 원칙:
-    - summary fallback은 active 주문 후보가 정확히 1건일 때만 허용한다.
-    - active 주문 후보가 0건이면 매핑 실패로 생략한다.
-    - active 주문 후보가 2건 이상이면 output2가 전체 aggregate summary일 수 있으므로
-      connector_order_request / connector_order_event / connector_fill 변경을 금지한다.
+    Safety principles:
+    - The summary fallback is allowed only when there is exactly 1 active order candidate.
+    - If there are 0 active order candidates, skip it as a mapping failure.
+    - If there are 2 or more active order candidates, output2 may be a full aggregate summary,
+      so prohibit changes to connector_order_request / connector_order_event / connector_fill.
     """
 
     conditions = [
@@ -595,7 +595,7 @@ def _process_summary_fallback(
     order_no: Optional[str],
     branch_code: Optional[str],
 ):
-    """상세 주문 목록이 없고 summary만 있는 조회 결과를 단일 주문 event/fill로 보정한다."""
+    """Corrects a query result that has no detailed order list but only a summary into a single order's event/fill."""
     summary = data.get("output2", {}) or {}
     detail_orders = data.get("output1", []) or []
 
@@ -655,16 +655,16 @@ def _process_summary_fallback(
     trade_side = (context.get("trade_side") or "").upper()
 
     # ---------------------------------------------------------
-    # summary fallback side 결정 규칙
+    # Rule for deciding the summary fallback side
     # ---------------------------------------------------------
-    # BUY / SELL 주문 자체는 반드시 현재 주문의 request_type을 side로 사용해야 한다.
+    # A BUY / SELL order itself must use the current order's request_type as the side.
     #
-    # 기존 로직은 parent chain에서 계산한 trade_side를 우선 사용했기 때문에,
-    # BUY로 생성된 포지션을 SELL 하는 주문이 parent_order_request_id를 통해
-    # BUY 주문과 연결되어 있으면 SELL 주문의 event/fill side가 BUY로 저장될 수 있었다.
+    # The previous logic preferred the trade_side computed from the parent chain, so
+    # if an order selling a position created by a BUY was linked to the BUY order via
+    # parent_order_request_id, the SELL order's event/fill side could be saved as BUY.
     #
-    # MODIFY / CANCEL은 자체 request_type이 매수/매도가 아니므로 원 주문 방향인
-    # trade_side를 사용한다.
+    # MODIFY / CANCEL have a request_type that is not buy/sell, so they use the
+    # original order's direction, trade_side.
     # ---------------------------------------------------------
     if request_type in ("BUY", "SELL"):
         fallback_side = request_type
@@ -675,8 +675,8 @@ def _process_summary_fallback(
     else:
         fallback_side = "UNKNOWN"
 
-    # LIMIT 주문에서 output1이 비어 있고 summary만 있는 경우,
-    # output2는 조회조건 전체 합계일 수 있으므로 체결로 간주하지 않음.
+    # For a LIMIT order where output1 is empty and only a summary is present,
+    # output2 may be the total of the query conditions, so do not treat it as a fill.
     if order_method == "LIMIT":
         fallback_executed_qty = 0
         fallback_total_exec_amount = 0
@@ -691,14 +691,14 @@ def _process_summary_fallback(
     cancel_flag = "N"
 
     # ---------------------------------------------------------
-    # CANCEL row는 일반 주문 접수(ACCEPTED)가 아니라
-    # "취소 요청 접수"로 별도 표현한다.
+    # A CANCEL row is not a normal order acceptance (ACCEPTED); it is represented
+    # separately as a "cancellation request acceptance".
     #
-    # 주의:
-    # - 여기서는 KIS history output1 상세가 없고 output2 summary만 있으므로
-    #   최종 취소 완료(CANCELED)까지 확정하지 않는다.
-    # - 그래서 request_status/event_type은 CANCEL_ACCEPTED로 둔다.
-    # - 원 주문/정정 주문을 CANCELED로 바꾸는 후처리는 다음 단계에서 처리한다.
+    # Note:
+    # - Here, there is no KIS history output1 detail, only an output2 summary, so
+    #   we do not finalize as fully canceled (CANCELED).
+    # - Therefore request_status/event_type is left as CANCEL_ACCEPTED.
+    # - The post-processing that changes the original/modification order to CANCELED is handled in the next step.
     # ---------------------------------------------------------
     if request_type == "CANCEL":
         event_type = "CANCEL_ACCEPTED"
@@ -798,12 +798,12 @@ def _process_summary_fallback(
 
 def _find_active_order_contexts(limit: Optional[int] = None):
     """
-    Step 13 기본 실행용 active 주문 목록 조회.
+    Queries the active order list for the default Step 13 execution.
 
-    운영 원칙:
-    - broad 조회를 기본 DB 반영 경로로 사용하지 않는다.
-    - broker_order_no / ticker_code가 있는 active 주문을 1건씩 단건 조회한다.
-    - 각 주문은 fetch_and_save_orders(..., try_broad_search_if_empty=False)로 처리한다.
+    Operational principles:
+    - Do not use the broad query as the default DB-reflection path.
+    - Query active orders that have broker_order_no / ticker_code one at a time.
+    - Process each order with fetch_and_save_orders(..., try_broad_search_if_empty=False).
     """
 
     limit_clause = ""
@@ -866,7 +866,7 @@ def _find_active_order_contexts(limit: Optional[int] = None):
 
 
 def _get_order_request_status(order_request_id: int) -> Optional[str]:
-    """DB에 반영된 connector 주문의 최신 상태를 조회한다."""
+    """Queries the latest status of the connector order reflected in the DB."""
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -893,19 +893,19 @@ def reconcile_active_orders(
     poll_interval_seconds: float = DEFAULT_ACTIVE_POLL_INTERVAL_SECONDS,
 ):
     """
-    Step 13 기본 모드.
+    Step 13 default mode.
 
-    active 주문을 주문번호/종목코드 기준으로 한 건씩 조회한다. 조회 후에도
-    ACCEPTED/PARTIAL_FILLED 계열 상태가 남으면 제한 횟수만큼 polling한다.
+    Queries active orders one at a time by order number/stock code. If an
+    ACCEPTED/PARTIAL_FILLED-family status remains after the query, poll up to the limited count.
 
-    성공 조건:
-    - 각 대상 주문이 FILLED로 전이됨
+    Success condition:
+    - Each target order transitions to FILLED
 
-    실패 조건:
-    - API/DB 처리 실패
-    - REJECTED/CANCELED/FAILED 같은 실패 terminal 상태
-    - polling 소진 후에도 active 상태 유지
-    - 상태 row 누락 또는 알 수 없는 상태
+    Failure conditions:
+    - API/DB processing failure
+    - A failure terminal status such as REJECTED/CANCELED/FAILED
+    - The active status remains after polling is exhausted
+    - A missing status row or an unknown status
     """
 
     if poll_count < 0:
@@ -1061,9 +1061,9 @@ def fetch_and_save_orders(
     try_broad_search_if_empty: bool = True,
 ):
     """
-    1) 가능하면 특정 주문번호/종목으로 직접조회
-    2) output1이 비면 broad search 1회 재시도
-    3) 그래도 비면 output2 summary로 fallback 업데이트
+    1) If possible, query directly by a specific order number/stock
+    2) If output1 is empty, retry the broad search once
+    3) If still empty, update via fallback using the output2 summary
     """
 
     account_id = ensure_connector_account(
@@ -1102,16 +1102,16 @@ def fetch_and_save_orders(
         return data
 
     # ---------------------------------------------------------
-    # direct 조회에서 output1은 비었지만 output2 summary가 있는 경우
+    # When output1 is empty in a direct query but an output2 summary exists
     # ---------------------------------------------------------
-    # 특정 주문번호/종목코드로 조회한 direct output2는 해당 주문의 체결 요약일 가능성이 높다.
-    # 이 상태에서 broad search를 먼저 수행하면, broad output2의 전체 합계/평균가가
-    # 특정 주문에 섞여 잘못된 event/fill 금액이 저장될 수 있다.
+    # The direct output2 queried by a specific order number/stock code is likely the fill summary of that order.
+    # If a broad search is performed first in this state, the total/average price of the broad output2 can be
+    # mixed into the specific order and an incorrect event/fill amount can be saved.
     #
-    # 예:
-    # - HMM 직접 조회 output2: 54주 / 1,109,950원 / 평균 20,554.6296
-    # - broad 조회 output2: 현대해상+HMM 합계 76주 / 1,925,500원 / 평균 25,335.5263
-    # 기존 로직은 broad summary를 HMM 주문에 적용할 수 있었음.
+    # Example:
+    # - HMM direct-query output2: 54 shares / 1,109,950 KRW / avg 20,554.6296
+    # - broad-query output2: 현대해상+HMM total 76 shares / 1,925,500 KRW / avg 25,335.5263
+    # The previous logic could apply the broad summary to the HMM order.
     # ---------------------------------------------------------
     direct_summary = data.get("output2", {}) or {}
     direct_tot_ord_qty = _to_int(direct_summary.get("tot_ord_qty", "0"))
@@ -1152,7 +1152,7 @@ def fetch_and_save_orders(
             print(json.dumps(broad_orders, indent=2, ensure_ascii=False))
 
             if broad_orders:
-                # 특정 주문번호/종목 필터링
+                # Filter by a specific order number/stock
                 filtered_orders = []
                 for o in broad_orders:
                     if stock_code and o.get("pdno") != stock_code:
@@ -1169,7 +1169,7 @@ def fetch_and_save_orders(
                 else:
                     print("⚠ broad search에서는 상세행이 있었지만 대상 주문과 일치하는 건 없음")
 
-            # broad도 detail 없으면 broad summary 기준 fallback
+            # If broad also has no detail, fall back based on the broad summary
             _process_summary_fallback(
                 account_id=account_id,
                 data=broad_data,
@@ -1179,7 +1179,7 @@ def fetch_and_save_orders(
             )
             return broad_data
 
-    # direct만 있고 detail 없으면 direct summary 기준 fallback
+    # If only direct exists with no detail, fall back based on the direct summary
     _process_summary_fallback(
         account_id=account_id,
         data=data,

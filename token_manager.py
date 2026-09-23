@@ -1,7 +1,7 @@
-"""KIS access token 파일 처리와 발급/갱신 helper.
+"""KIS access token file handling and issuance/renewal helper.
 
-token 파일을 읽고 쓰며 KIS token endpoint를 호출할 수 있다.
-정적 문서화 작업 중에는 실행하거나 token 값을 출력하지 않는다.
+Reads and writes the token file and can call the KIS token endpoint.
+Do not run it or print token values during static documentation work.
 """
 
 import requests
@@ -62,7 +62,7 @@ def get_access_token():
 
     token = load_token()
     if token:
-        # 일단 기존 토큰 쓰되 검증/재발급 루틴 수행
+        # Use the existing token for now, but run the validation/reissue routine
         print("[token_manager] 기존 토큰 재사용")
         return token
 
@@ -74,21 +74,21 @@ def force_issue_new_token():
     delete_token_file()
     return issue_new_token()
 
-# —————— API 호출 중 토큰 오류 체크용 헬퍼 ——————
+# —————— Helper for checking token errors during API calls ——————
 
 def check_and_refresh_token(response_text):
     """
-    API 응답 텍스트에서 토큰 만료/유효성 오류가 있으면
-    토큰 파일 삭제 + 토큰 재발급 후 반환.
-    아니면 None 반환.
+    If the API response text contains a token expiry/validity error,
+    delete the token file, reissue the token and return it.
+    Otherwise return None.
     """
     text = response_text.lower()
-    # 만료 메시지나 인증 오류 메시지 포함돼 있으면
+    # If it contains an expiry message or an authentication error message
     if "token" in text and ("만료" in text or "expired" in text):
         print("[token_manager] 응답에서 토큰 만료/오류 감지됨:", response_text[:100])
-        # 파일 삭제
+        # Delete the file
         delete_token_file()
-        # 재발급
+        # Reissue
         return issue_new_token()
     return None
 

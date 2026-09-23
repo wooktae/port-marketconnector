@@ -140,8 +140,9 @@ def _install_common_mocks(
         "update_order_request_status_only",
         lambda *args, **kwargs: None,
     )
-    # submit_rvsecncl_order 성공 후처리(CANCEL_ACCEPTED 전이)가 사용하는 조건부 UPDATE도
-    # mock으로 격리해 실제 로컬 DB를 건드리지 않게 한다(Requirement 6.3).
+    # Also isolate the conditional UPDATE used by submit_rvsecncl_order success
+    # post-processing (the CANCEL_ACCEPTED transition) with a mock so the real
+    # local DB is not touched (Requirement 6.3).
     monkeypatch.setattr(
         common,
         "update_order_request_status_if_not_terminal",
@@ -184,8 +185,8 @@ def _install_common_mocks(
         fake_request_api,
     )
 
-    # 실제 broker/token 경계 진입 시 즉시 실패시키는 fail-fast 가드.
-    # _request_api를 mock했으므로 아래 함수들은 호출되지 않아야 한다.
+    # Fail-fast guard that immediately fails if the real broker/token boundary is entered.
+    # Since _request_api is mocked, the functions below must not be called.
     def _fail_real_broker_call(*args, **kwargs):
         raise AssertionError("real requests.post must not be called during validation")
 
@@ -219,7 +220,7 @@ def test_full_cancel_uses_zero_quantity_and_all_order_flag(
     assert payload["QTY_ALL_ORD_YN"] == "Y"
     assert payload["RVSE_CNCL_DVSN_CD"] == "02"
     assert payload["ORD_UNPR"] == "0"
-    # mock broker 진입점은 정확히 1회 호출되고, 실제 broker/token 경계는 호출되지 않는다.
+    # The mock broker entry point is called exactly once, and the real broker/token boundary is not called.
     assert captured["request_api_call_count"] == 1
 
 
@@ -242,5 +243,5 @@ def test_partial_cancel_uses_requested_quantity(
 
     assert payload["ORD_QTY"] == "10"
     assert payload["QTY_ALL_ORD_YN"] == "N"
-    # mock broker 진입점은 정확히 1회 호출되고, 실제 broker/token 경계는 호출되지 않는다.
+    # The mock broker entry point is called exactly once, and the real broker/token boundary is not called.
     assert captured["request_api_call_count"] == 1

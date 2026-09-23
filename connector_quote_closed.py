@@ -1,7 +1,7 @@
-"""KIS 기간 시세 조회와 EOD quote 저장 흐름.
+"""KIS period quote query and EOD quote save flow.
 
-기간별 일봉 API를 호출하고 옵션에 따라 connector_quote_eod 테이블에 upsert한다.
-`--no-save` 사용 시에도 외부 API 호출과 token 처리는 발생할 수 있다.
+Calls the per-period daily-candle API and, depending on the option, upserts into the connector_quote_eod table.
+Even when `--no-save` is used, external API calls and token handling can still occur.
 """
 
 import argparse
@@ -46,7 +46,7 @@ def get_closed_prices(
     end_date: str = "",
     save_db: bool = True,
 ):
-    """기간 시세를 조회하고 요청 옵션에 따라 EOD quote를 DB에 저장한다."""
+    """Queries period quotes and saves EOD quotes to the DB depending on the request option."""
     print(f"\n📆 기간별 시세 조회: {stock_code}, 기간: {period_div}")
 
     token = get_access_token()

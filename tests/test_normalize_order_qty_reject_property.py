@@ -1,8 +1,9 @@
-"""Property test: 무효 수량은 항상 거부된다 (Property 2).
+"""Property test: invalid quantities are always rejected (Property 2).
 
-이 테스트는 브로커 주문 제출 경계의 순수 함수 `normalize_order_qty`만 검증한다.
-broker API, token, DB 함수를 호출하지 않으며, import 시 실제 side effect가 발생하지
-않도록 config 환경변수를 import-only 더미 값으로 주입한 뒤 대상 모듈을 import한다.
+This test validates only the pure function `normalize_order_qty` at the broker
+order submission boundary. It does not call broker APIs, token, or DB functions,
+and to avoid real side effects on import, it injects import-only dummy values for
+the config environment variables before importing the target module.
 """
 
 from __future__ import annotations
@@ -18,10 +19,10 @@ from hypothesis import strategies as st
 
 
 def _install_import_only_environment() -> None:
-    """config.py가 import 시 요구하는 환경변수를 더미 값으로만 채운다.
+    """Fill only with dummy values the environment variables that config.py requires on import.
 
-    실제 KIS 키·계좌 값을 읽거나 기록하지 않고, broker/DB/token side effect도
-    유발하지 않는다. 이미 설정된 키는 덮어쓰지 않는다.
+    Does not read or record real KIS key/account values, and does not trigger
+    broker/DB/token side effects. Keys that are already set are not overwritten.
     """
     config_path = Path(__file__).resolve().parents[1] / "config.py"
     source = config_path.read_text(encoding="utf-8-sig")
@@ -94,10 +95,11 @@ import connector_order_common as common
 
 
 def _is_unparseable_or_non_positive_integer_string(text: str) -> bool:
-    """문자열이 1 이상의 정수로 정규화될 수 없으면 True.
+    """True if the string cannot be normalized to an integer of 1 or greater.
 
-    Decimal 파싱 실패(비숫자), 유한하지 않은 값, 소수부 존재, 정수지만 1 미만인
-    경우를 모두 무효로 판정한다. 테스트 입력이 항상 거부 대상이 되도록 보장한다.
+    Treats all of the following as invalid: Decimal parse failure (non-numeric),
+    non-finite values, presence of a fractional part, and integers below 1.
+    Ensures the test input is always a rejection target.
     """
     stripped = text.strip()
     try:
@@ -111,14 +113,14 @@ def _is_unparseable_or_non_positive_integer_string(text: str) -> bool:
     return int(parsed) < 1
 
 
-# 0을 여러 표현으로: int, Decimal, float, str
+# Zero in several representations: int, Decimal, float, str
 _zero_values = st.sampled_from([0, Decimal(0), 0.0, "0", " 0 "])
 
-# 음수 정수와 그 문자열 표현
+# Negative integers and their string representations
 _negative_integers = st.integers(max_value=-1)
 _negative_integer_strings = _negative_integers.map(str)
 
-# 소수부가 있는 Decimal (정수가 아님)
+# Decimals with a fractional part (not integers)
 _non_integer_decimals = st.decimals(
     allow_nan=False,
     allow_infinity=False,
@@ -127,7 +129,7 @@ _non_integer_decimals = st.decimals(
     max_value=Decimal(10000),
 ).filter(lambda d: d != d.to_integral_value())
 
-# 소수부가 있는 float (정수가 아님)
+# Floats with a fractional part (not integers)
 _non_integer_floats = st.floats(
     allow_nan=False,
     allow_infinity=False,
@@ -135,18 +137,18 @@ _non_integer_floats = st.floats(
     max_value=10000.0,
 ).filter(lambda f: not f.is_integer())
 
-# 소수부가 있는 숫자 문자열
+# Numeric strings with a fractional part
 _non_integer_number_strings = _non_integer_decimals.map(str)
 
-# bool 값
+# bool values
 _booleans = st.booleans()
 
-# 숫자로 해석할 수 없는 문자열 (그리고 0·음수·소수 숫자 문자열도 포함)
+# Strings that cannot be interpreted as numbers (also including zero/negative/fractional numeric strings)
 _non_numeric_strings = st.text(min_size=0, max_size=12).filter(
     _is_unparseable_or_non_positive_integer_string
 )
 
-# 숫자로 해석할 수 없는 미지원 타입
+# Unsupported types that cannot be interpreted as numbers
 _unsupported_types = st.one_of(
     st.none(),
     st.binary(max_size=8),
@@ -169,16 +171,16 @@ _invalid_quantities = st.one_of(
 )
 
 
-# Feature: connector-order-submission-guards, Property 2: 무효 수량은 항상 거부된다
+# Feature: connector-order-submission-guards, Property 2: invalid quantities are always rejected
 # Validates: Requirements 3.2, 3.3, 3.4, 3.5, 3.6
 @settings(max_examples=200)
 @given(value=_invalid_quantities)
 def test_invalid_quantity_is_always_rejected(value: object) -> None:
-    """0·음수·정수가 아닌 소수·bool·비숫자·미지원 타입 입력에 대해
+    """For zero, negative, non-integer fractional, bool, non-numeric, and unsupported-type inputs,
 
-    `normalize_order_qty`는 절사·반올림 없이 `QuantityValidationError`를 발생시키고
-    정규화 수량을 반환하지 않아야 한다. 어떤 값도 return되지 않고 항상 예외로만
-    종료됨을 pytest.raises로 확인한다.
+    `normalize_order_qty` must raise `QuantityValidationError` without truncating or
+    rounding, and must not return a normalized quantity. Confirm with pytest.raises
+    that no value is ever returned and it always terminates only via the exception.
     """
     with pytest.raises(common.QuantityValidationError):
         common.normalize_order_qty(value)

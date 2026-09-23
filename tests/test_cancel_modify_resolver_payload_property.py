@@ -1,17 +1,19 @@
-"""Property test: Cancel/Modify resolver는 계약대로 payload 수량을 구성한다 (Property 7).
+"""Property test: the Cancel/Modify resolver builds the payload quantity per the contract (Property 7).
 
-이 테스트는 브로커 주문 제출 경계의 순수 함수 `resolve_cancel_modify_quantity`만
-검증한다. 이 함수는 CANCEL/MODIFY 요청의 수량 분기를 계산하며, broker API·token·DB
-함수를 호출하지 않는 순수 함수다.
+This test validates only the pure function `resolve_cancel_modify_quantity` at the
+broker order submission boundary. This function computes the quantity branch of a
+CANCEL/MODIFY request and is a pure function that does not call broker API, token, or
+DB functions.
 
-검증 대상 계약(유효 입력 → payload 구성):
-    - CANCEL, qty 생략(None) → `("0", "Y")`(전량 취소).
-    - CANCEL, 1 이상 active_order_qty 이하 정수 → `(str(qty), "N")`(부분 취소).
-    - MODIFY, 1 이상 양의 정수 → `(str(qty), "N")`.
-    - MODIFY, qty 생략(None) → `(str(active_order_qty), "N")`.
+Contract under validation (valid input -> payload construction):
+    - CANCEL, qty omitted (None) -> `("0", "Y")` (full cancel).
+    - CANCEL, integer from 1 up to active_order_qty -> `(str(qty), "N")` (partial cancel).
+    - MODIFY, positive integer of 1 or greater -> `(str(qty), "N")`.
+    - MODIFY, qty omitted (None) -> `(str(active_order_qty), "N")`.
 
-broker API, token, DB 함수를 호출하지 않으며, import 시 실제 side effect가 발생하지
-않도록 config 환경변수를 import-only 더미 값으로 주입한 뒤 대상 모듈을 import한다.
+It does not call broker API, token, or DB functions, and to avoid real side effects on
+import, it injects import-only dummy values for the config environment variables before
+importing the target module.
 """
 
 from __future__ import annotations
@@ -26,10 +28,10 @@ from hypothesis import strategies as st
 
 
 def _install_import_only_environment() -> None:
-    """config.py가 import 시 요구하는 환경변수를 더미 값으로만 채운다.
+    """Fill only with dummy values the environment variables that config.py requires on import.
 
-    실제 KIS 키·계좌 값을 읽거나 기록하지 않고, broker/DB/token side effect도
-    유발하지 않는다. 이미 설정된 키는 덮어쓰지 않는다.
+    Does not read or record real KIS key/account values, and does not trigger
+    broker/DB/token side effects. Keys that are already set are not overwritten.
     """
     config_path = Path(__file__).resolve().parents[1] / "config.py"
     source = config_path.read_text(encoding="utf-8-sig")
@@ -102,22 +104,23 @@ import connector_order_common as common
 
 
 def _int_representations(n: int):
-    """1 이상 정수 n의 동등 표현(int, Decimal, str)을 무작위로 선택하는 전략.
+    """Strategy that randomly selects an equivalent representation (int, Decimal, str) of an integer n of 1 or greater.
 
-    resolver는 수량 검증(C1)과 동일한 의미로 정수와 정확히 같은 Decimal·문자열을
-    허용하므로, 표현이 달라도 동일한 payload를 구성해야 한다.
+    The resolver, with the same semantics as quantity validation (C1), accepts Decimals
+    and strings exactly equal to an integer, so it must build the same payload regardless
+    of representation.
     """
     return st.sampled_from([n, Decimal(n), str(n)])
 
 
-# Feature: connector-order-submission-guards, Property 7: Cancel/Modify resolver는 계약대로 payload 수량을 구성한다
+# Feature: connector-order-submission-guards, Property 7: the Cancel/Modify resolver builds the payload quantity per the contract
 # Validates: Requirements 4.2, 4.3, 4.6, 4.7
 @settings(max_examples=200)
 @given(active_qty=st.integers(min_value=1, max_value=10**9))
 def test_cancel_full_omitted_quantity_builds_all_order_payload(active_qty: int) -> None:
-    """CANCEL & qty 생략(None) → 전량 취소 payload `("0", "Y")`.
+    """CANCEL & qty omitted (None) -> full cancel payload `("0", "Y")`.
 
-    전량 취소는 활성 주문 수량과 무관하게 항상 `ORD_QTY="0"`, `QTY_ALL_ORD_YN="Y"`다.
+    A full cancel is always `ORD_QTY="0"`, `QTY_ALL_ORD_YN="Y"` regardless of the active order quantity.
     """
     ord_qty, qty_all_ord_yn = common.resolve_cancel_modify_quantity(
         "CANCEL", None, active_qty
@@ -126,14 +129,14 @@ def test_cancel_full_omitted_quantity_builds_all_order_payload(active_qty: int) 
     assert qty_all_ord_yn == "Y"
 
 
-# Feature: connector-order-submission-guards, Property 7: Cancel/Modify resolver는 계약대로 payload 수량을 구성한다
+# Feature: connector-order-submission-guards, Property 7: the Cancel/Modify resolver builds the payload quantity per the contract
 # Validates: Requirements 4.2, 4.3, 4.6, 4.7
 @settings(max_examples=200)
 @given(data=st.data())
 def test_cancel_partial_quantity_builds_partial_payload(data: st.DataObject) -> None:
-    """CANCEL & 1 <= qty <= active인 정수 → 부분 취소 payload `(str(qty), "N")`.
+    """CANCEL & an integer with 1 <= qty <= active -> partial cancel payload `(str(qty), "N")`.
 
-    int, Decimal, str 표현 모두 값 보존되어 동일한 문자열 수량을 구성해야 한다.
+    The int, Decimal, and str representations must all be value-preserving and build the same string quantity.
     """
     active_qty = data.draw(st.integers(min_value=1, max_value=10**9))
     qty = data.draw(st.integers(min_value=1, max_value=active_qty))
@@ -146,14 +149,14 @@ def test_cancel_partial_quantity_builds_partial_payload(data: st.DataObject) -> 
     assert qty_all_ord_yn == "N"
 
 
-# Feature: connector-order-submission-guards, Property 7: Cancel/Modify resolver는 계약대로 payload 수량을 구성한다
+# Feature: connector-order-submission-guards, Property 7: the Cancel/Modify resolver builds the payload quantity per the contract
 # Validates: Requirements 4.2, 4.3, 4.6, 4.7
 @settings(max_examples=200)
 @given(data=st.data())
 def test_modify_positive_quantity_builds_modify_payload(data: st.DataObject) -> None:
-    """MODIFY & 1 이상 양의 정수 qty → 정정 payload `(str(qty), "N")`.
+    """MODIFY & a positive integer qty of 1 or greater -> modify payload `(str(qty), "N")`.
 
-    active_order_qty와 무관하게 지정한 정정 수량을 그대로 사용한다.
+    Uses the specified modify quantity as-is, regardless of active_order_qty.
     """
     qty = data.draw(st.integers(min_value=1, max_value=10**9))
     active_qty = data.draw(st.integers(min_value=1, max_value=10**9))
@@ -166,12 +169,12 @@ def test_modify_positive_quantity_builds_modify_payload(data: st.DataObject) -> 
     assert qty_all_ord_yn == "N"
 
 
-# Feature: connector-order-submission-guards, Property 7: Cancel/Modify resolver는 계약대로 payload 수량을 구성한다
+# Feature: connector-order-submission-guards, Property 7: the Cancel/Modify resolver builds the payload quantity per the contract
 # Validates: Requirements 4.2, 4.3, 4.6, 4.7
 @settings(max_examples=200)
 @given(active_qty=st.integers(min_value=1, max_value=10**9))
 def test_modify_omitted_quantity_uses_active_order_quantity(active_qty: int) -> None:
-    """MODIFY & qty 생략(None) → 활성 주문 수량 사용 `(str(active), "N")`."""
+    """MODIFY & qty omitted (None) -> use the active order quantity `(str(active), "N")`."""
     ord_qty, qty_all_ord_yn = common.resolve_cancel_modify_quantity(
         "MODIFY", None, active_qty
     )

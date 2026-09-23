@@ -1,7 +1,7 @@
-"""Flask 기반 connector API 진입점.
+"""Flask-based connector API entrypoint.
 
-시세, 잔고, 주문, 주문/체결 조회 실행 API와 View 조회 API를 함께 제공한다.
-route 사용 방식에 따라 브로커 API 호출, token 갱신, DB 쓰기가 발생할 수 있다.
+Provides both the quote, balance, order, and order/fill query execution APIs and the View query API.
+Depending on how a route is used, a broker API call, token renewal, or DB write can occur.
 """
 
 import os
@@ -438,7 +438,7 @@ def view_strategy_trades_recent():
     return jsonify(result), 200
 
 
-# 기존 호환용 alias
+# Alias kept for backward compatibility
 @app.route("/api/v1/price", methods=["GET"])
 def legacy_price():
     return quote_realtime()

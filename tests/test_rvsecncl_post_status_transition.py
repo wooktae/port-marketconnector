@@ -1,18 +1,20 @@
-"""Example test: 취소·정정 성공 후처리 상태 전이 (Requirement 5.7).
+"""Example test: cancel/modify success post-processing state transition (Requirement 5.7).
 
-이 테스트는 `submit_rvsecncl_order()` 성공 경로의 후처리 상태 전이를 검증한다.
+This test validates the post-processing state transition on the success path of
+`submit_rvsecncl_order()`.
 
-- `apply_rvsecncl_parent_status_after_success()`가 CANCEL이면 활성 주문을 비-Terminal
-  상태에서 `CANCELED`로, MODIFY이면 `MODIFIED`로 전이하려고
-  `update_order_request_status_if_not_terminal`을 기대한 (id, status) 인자로 호출하는지
-  확인한다.
-- `submit_rvsecncl_order()` 성공 경로의 CANCEL_ACCEPTED 전이가 취소 요청 row에 대해
-  `update_order_request_status_if_not_terminal`을 `CANCEL_ACCEPTED` 상태로 호출하는지
-  확인한다.
+- Verify that `apply_rvsecncl_parent_status_after_success()` calls
+  `update_order_request_status_if_not_terminal` with the expected (id, status) arguments
+  to transition the active order from a non-Terminal state to `CANCELED` for CANCEL and
+  to `MODIFIED` for MODIFY.
+- Verify that the CANCEL_ACCEPTED transition on the success path of
+  `submit_rvsecncl_order()` calls `update_order_request_status_if_not_terminal` with the
+  `CANCEL_ACCEPTED` status for the cancel request row.
 
-모든 검증은 broker API(`requests.post`/`requests.get`), token 함수, DB 함수를 mock으로
-격리한 상태에서 수행한다. 실제 broker/DB/token 호출은 발생하지 않으며, 상태 전이 판정은
-recording spy가 인자만 기록한다(실제 로컬 DB 미접근).
+All checks are performed with the broker API (`requests.post`/`requests.get`), token
+functions, and DB functions isolated by mocks. No real broker/DB/token calls occur, and
+for the state transition decision a recording spy records only the arguments (no real
+local DB access).
 """
 
 from __future__ import annotations
@@ -24,10 +26,10 @@ from typing import Any
 
 
 def _install_import_only_environment() -> None:
-    """config.py가 import 시 요구하는 환경변수를 더미 값으로만 채운다.
+    """Fill only with dummy values the environment variables that config.py requires on import.
 
-    실제 KIS 키·계좌 값을 읽거나 기록하지 않고, broker/DB/token side effect도
-    유발하지 않는다. 이미 설정된 키는 덮어쓰지 않는다.
+    Does not read or record real KIS key/account values, and does not trigger
+    broker/DB/token side effects. Keys that are already set are not overwritten.
     """
     config_path = Path(__file__).resolve().parents[1] / "config.py"
     source = config_path.read_text(encoding="utf-8-sig")
@@ -50,7 +52,7 @@ def _install_import_only_environment() -> None:
             ):
                 keys.add(node.slice.value)
 
-        # os.getenv("KEY") 및 os.environ.get("KEY")
+        # os.getenv("KEY") and os.environ.get("KEY")
         if isinstance(node, ast.Call):
             func = node.func
 
@@ -126,10 +128,10 @@ def _active_order() -> dict[str, Any]:
 
 
 def _install_status_transition_spy(monkeypatch, recorded: list[tuple[Any, ...]]) -> None:
-    """`update_order_request_status_if_not_terminal`을 인자 기록 spy로 대체한다.
+    """Replace `update_order_request_status_if_not_terminal` with an argument-recording spy.
 
-    실제 로컬 DB를 접근하지 않고 (order_request_id, request_status) 인자만 기록한다.
-    갱신 성공을 의미하는 True를 반환한다.
+    Does not access the real local DB and records only the (order_request_id,
+    request_status) arguments. Returns True, meaning the update succeeded.
     """
 
     def _spy(order_request_id, request_status, message=None):
@@ -155,7 +157,7 @@ def test_apply_parent_status_cancel_drives_active_order_to_canceled(
         root_original_id=77,
     )
 
-    # CANCEL 후처리는 활성 주문(77)을 비-Terminal → CANCELED로 전이하려고 시도한다.
+    # CANCEL post-processing attempts to transition the active order (77) from non-Terminal to CANCELED.
     assert recorded == [(77, "CANCELED")]
 
 
@@ -171,7 +173,7 @@ def test_apply_parent_status_modify_drives_active_order_to_modified(
         root_original_id=77,
     )
 
-    # MODIFY 후처리는 활성 주문(77)을 비-Terminal → MODIFIED로 전이하려고 시도한다.
+    # MODIFY post-processing attempts to transition the active order (77) from non-Terminal to MODIFIED.
     assert recorded == [(77, "MODIFIED")]
 
 
@@ -180,9 +182,10 @@ def _install_submit_mocks(
     captured: dict[str, Any],
     recorded: list[tuple[Any, ...]],
 ) -> None:
-    """`submit_rvsecncl_order()`를 broker/DB/token 없이 실행하기 위한 mock 격리.
+    """Mock isolation to run `submit_rvsecncl_order()` without broker/DB/token.
 
-    상태 전이 판정은 recorded 리스트에 인자만 기록하는 spy로 대체한다.
+    The state transition decision is replaced with a spy that records only the arguments
+    into the recorded list.
     """
     active = _active_order()
 
@@ -216,7 +219,7 @@ def _install_submit_mocks(
         "update_order_request_status_only",
         lambda *args, **kwargs: None,
     )
-    # CANCEL_ACCEPTED 전이와 후처리가 사용하는 조건부 UPDATE를 인자 기록 spy로 대체한다.
+    # Replace the conditional UPDATE used by the CANCEL_ACCEPTED transition and post-processing with an argument-recording spy.
     _install_status_transition_spy(monkeypatch, recorded)
     monkeypatch.setattr(
         common,
@@ -255,7 +258,7 @@ def _install_submit_mocks(
         fake_request_api,
     )
 
-    # 실제 broker/token 경계 진입 시 즉시 실패시키는 fail-fast 가드.
+    # Fail-fast guard that immediately fails if the real broker/token boundary is entered.
     def _fail_real_broker_call(*args, **kwargs):
         raise AssertionError("real requests.post must not be called during validation")
 
@@ -284,7 +287,7 @@ def test_submit_cancel_success_marks_cancel_request_as_cancel_accepted(
         qty=None,
     )
 
-    # 취소 요청 row(order_request_id=9001)를 비-Terminal → CANCEL_ACCEPTED로 전이한다.
+    # Transition the cancel request row (order_request_id=9001) from non-Terminal to CANCEL_ACCEPTED.
     assert (9001, "CANCEL_ACCEPTED") in recorded
-    # mock broker 진입점은 정확히 1회 호출되고, 실제 broker/token 경계는 호출되지 않는다.
+    # The mock broker entry point is called exactly once, and the real broker/token boundary is not called.
     assert captured["request_api_call_count"] == 1

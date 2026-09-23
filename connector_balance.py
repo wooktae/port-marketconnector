@@ -1,7 +1,7 @@
-"""KIS 잔고/보유 조회와 snapshot 저장 흐름.
+"""KIS balance/holdings query and snapshot save flow.
 
-브로커 잔고 API를 호출하고 connector 및 legacy balance/holding 테이블에 저장할 수 있다.
-실행 시 token 처리, 외부 API 호출, DB 쓰기가 모두 발생할 수 있는 entrypoint다.
+Calls the broker balance API and can save to the connector and legacy balance/holding tables.
+This is an entrypoint where token handling, external API calls and DB writes can all occur on execution.
 """
 
 import json
@@ -49,7 +49,7 @@ def _to_int(v, default=0):
 
 
 def fetch_and_save_balance():
-    """잔고 API 응답을 파싱해 계좌/보유 snapshot과 legacy 테이블에 저장한다."""
+    """Parses the balance API response and saves it to the account/holdings snapshot and legacy tables."""
     account_id = ensure_connector_account(
         account_no=PAPER_ACNT,
         account_product_code=ACNT_PRDT_CD,
@@ -252,17 +252,17 @@ def fetch_and_save_balance():
     # ---------------------------------------------------------
     # position snapshot replace
     # ---------------------------------------------------------
-    # 중요:
-    # connector_position_snapshot은 account_no + as_of_date 기준으로
-    # "현재 보유종목 전체 스냅샷"으로 취급한다.
+    # Important:
+    # connector_position_snapshot is treated as a "full snapshot of current holdings"
+    # keyed by account_no + as_of_date.
     #
-    # 따라서 먼저 해당 일자의 기존 snapshot을 삭제한 뒤,
-    # 이번 API output1 기준으로 다시 저장한다.
+    # Therefore, first delete the existing snapshot for that date, then
+    # save again based on this API's output1.
     #
-    # 이 처리를 하지 않으면:
-    # - 오전에 보유종목이 있었고
-    # - 오후에 전량 매도되어 output1=[] 이 된 경우
-    # - 기존 position row가 남아서 View에 stale position이 표시될 수 있다.
+    # Without this handling:
+    # - if there were holdings in the morning
+    # - and everything was sold in the afternoon so output1=[]
+    # - the existing position rows would remain and a stale position could be shown in the View.
     deleted_position_count = delete_connector_position_snapshots(
         account_no=PAPER_ACNT,
         as_of_date=as_of_date,

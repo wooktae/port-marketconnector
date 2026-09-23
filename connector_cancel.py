@@ -21,11 +21,12 @@ from connector_order_common import submit_rvsecncl_order
 SOURCE_VERSION = "connector-order-cancel-1.0.0"
 API_NAME = "order-cancel"
 
-# 전량 취소 payload 계약:
-#   TR_ID와 RVSE_CNCL_DVSN_CD는 Paper 환경에서 전량 취소 동작이 확인된 값이다.
-#   실 환경(live) 검증 주장으로 확장하지 않으며, 실 환경 적용 전 KIS 문서로 재확인한다.
+# Full-cancellation payload contract:
+#   TR_ID and RVSE_CNCL_DVSN_CD are values whose full-cancellation behavior was
+#   confirmed in the Paper environment. Do not extend this into a live-environment
+#   validation claim; re-confirm against the KIS documentation before live use.
 TR_ID = "VTTC0803U"
-RVSE_CNCL_DVSN_CD = "02"   # 취소 구분 코드. Paper 환경 동작 확인 기준
+RVSE_CNCL_DVSN_CD = "02"   # Cancellation division code. Based on Paper-environment behavior confirmation
 
 
 def cancel_order(
