@@ -16,6 +16,7 @@ connector_strategy_order_execute.py
 connector_view_service.py
 db_config.py
 token_manager.py
+connector_locale.py
 requirements.txt
 scripts/run_connector_balance_daily.sh
 scripts/run_intraday_snapshot_and_evaluate.sh
