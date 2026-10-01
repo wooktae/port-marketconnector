@@ -52,6 +52,8 @@ phases:
           echo "BUNDLE_FILE_MISSING=${BUNDLE_PATH}"
           exit 20
         fi
+      - echo "=== VALIDATE VERSIONED ZIP ARTIFACT ==="
+      - python .devops/scripts/validate_bundle.py "${BUNDLE_PATH}" --expected-sha "${SOURCE_SHA}"
       - BUNDLE_SHA256="$(sha256sum "${BUNDLE_PATH}" | awk '{print $1}')"
       - echo "BUNDLE_NAME=${BUNDLE_NAME}"
       - echo "BUNDLE_PATH=${BUNDLE_PATH}"
