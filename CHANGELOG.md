@@ -13,6 +13,48 @@ Records the primary change history of port-marketconnector code and documentatio
 | Execution records | Record only validation actually performed |
 | Sensitive information | No verbatim token · account · order number · secret · ARN · endpoint |
 
+## 2026-10-01 — Bundle dependency and Artifact Contract hardening
+
+### Added
+
+| Item | Value |
+| --- | --- |
+| Bundle dependency Gate | AST-based repository-local Python dependency validation before ZIP creation |
+| Artifact validator | `.devops/scripts/validate_bundle.py` |
+| Artifact Contract Gate | Validate generated ZIP before S3 publish |
+
+### Changed
+
+| Item | Value |
+| --- | --- |
+| Bundle build | Fail closed when a bundled Python module depends on an omitted repository-local Python file |
+| CodeBuild flow | Compile → Test → Ruff → dependency Gate → ZIP Build → Artifact Contract → S3 Publish |
+| BuildSpec | Run `validate_bundle.py` before SHA output and Artifact Publish |
+
+### Fixed
+
+| Problem | Resolution |
+| --- | --- |
+| Runtime dependency could be omitted from `.devops/bundle/include.txt` while source compile/tests still succeeded | Validate repository-local Python dependency closure before ZIP creation |
+| Incomplete generated ZIP could proceed toward Artifact Publish | Validate the generated ZIP itself before S3 Publish |
+
+### Security
+
+| Item | Result |
+| --- | --- |
+| Python Compile | Succeeded |
+| Full Pytest | 56 passed |
+| Ruff | Succeeded |
+| Gate 1 normal case | Succeeded |
+| Gate 1 missing-dependency test | Correctly blocked · exit 1 |
+| Gate 2 Artifact Contract | Succeeded |
+| Actual CodeBuild | SUCCEEDED |
+| Versioned ZIP | Created successfully |
+| S3 Artifact Publish | Succeeded |
+| CodeDeploy | Not executed |
+| Connector execution | 0 |
+| Broker order API calls | 0 |
+
 ## 2026-08-11 — main Push-based MarketConnector automatic Release completion
 
 ### Added

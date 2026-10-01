@@ -24,6 +24,8 @@ The execution paths in this repository can lead to token issuance, external API 
 | Release Trigger | main Push · `workflow_dispatch` manual run |
 | CI | GitHub Actions → CodeBuild Quality Gate |
 | Deployment Artifact | Git SHA-based Versioned ZIP Bundle |
+| Bundle source validation | local Python dependency closure before ZIP creation |
+| Artifact validation | generated ZIP contract validation before S3 publish |
 | Artifact store | MarketConnector-dedicated versioning-enabled private S3 |
 | Deployment method | CodeDeploy EC2 In-place |
 | Deployment validation | Manifest and operating-file SHA-256 consistency |
@@ -367,8 +369,11 @@ main Push automatically runs the GitHub Actions Release, and the `workflow_dispa
 Deployment builds the Artifact based on the committed Git state and reflects it In-place onto EC2 via CodeDeploy.
 
 ```
-main Push → GitHub Actions → CodeBuild Quality Gate → Git SHA Versioned ZIP → Private Versioned S3 → EC2 state preparation → CodeDeploy EC2 In-place → No-Order Validate
+CodeBuild: Compile → Test → Ruff → Bundle Dependency Gate → Versioned ZIP → Artifact Contract Gate → S3 Publish
+Release:   S3 Versioned Artifact → EC2/SSM preparation → CodeDeploy In-place → No-Order Validate
 ```
+
+The Bundle Dependency Gate and the Artifact Contract Gate are Build and Artifact validation steps that run before S3 publish. They are not deployment-target or operating Runtime validation.
 
 ### EC2 state preservation
 
@@ -387,6 +392,10 @@ main Push → GitHub Actions → CodeBuild Quality Gate → Git SHA Versioned ZI
 | Determinism | Identical Bundle on Main and Detached Head |
 | Bundle include list | `.devops/bundle/include.txt` |
 | Bundle generator | `.devops/scripts/build_bundle.py` |
+| Bundle dependency gate | `.devops/scripts/build_bundle.py` · static repository-local Python dependency closure |
+| Artifact validator | `.devops/scripts/validate_bundle.py` |
+| Artifact contract | ZIP integrity · manifest presence · file-set equality · local dependency completeness · Source SHA consistency |
+| Failure behavior | Fail closed before S3 publish |
 | Artifact path | Unified to the MarketConnector-dedicated deployment Bucket and Prefix |
 | IAM Policy | Reuse the existing dedicated S3 IAM Policy |
 | Object Key | Git SHA-based |
@@ -472,6 +481,25 @@ DevOps completion validation results as of 2026-08-01.
 | Broker order API | 0 |
 
 Do not record the raw Deployment ID, SSM Command ID, S3 Version ID and full SHA-256 values.
+
+### 2026-10-01 Bundle dependency and Artifact Contract hardening validation
+
+| Item | Result |
+| --- | --- |
+| Python Compile | Succeeded |
+| Full Pytest | 56 passed |
+| Ruff | Succeeded |
+| Gate 1 normal case | Succeeded |
+| Gate 1 missing-dependency negative test | Blocked before ZIP creation · exit 1 |
+| Gate 2 Artifact Contract | Succeeded |
+| Actual CodeBuild | SUCCEEDED |
+| Versioned ZIP | Created successfully |
+| S3 Artifact Publish | Succeeded |
+| CodeDeploy | Not executed in this validation |
+| Connector business execution | 0 |
+| Broker order API calls | 0 |
+
+Gate 1 is the Bundle Dependency Gate in `build_bundle.py` that validates repository-local Python dependency closure before ZIP creation. Gate 2 is the Artifact Contract validation in `validate_bundle.py` that validates the generated ZIP before S3 publish.
 
 ## Database
 

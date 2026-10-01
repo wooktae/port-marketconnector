@@ -314,8 +314,9 @@ Do not record actual ARNs, instance ids, command ids, account-id and endpoints.
 | File | Role |
 | --- | --- |
 | `.devops/bundle/include.txt` | Manifest of deployment files to include in the Versioned ZIP |
-| `.devops/scripts/build_bundle.py` | Create the committed Git blob-based Versioned ZIP and Manifest |
-| `.devops/codebuild/buildspec.yml` | Compile · Test · Ruff · Bundle · S3 upload Phase |
+| `.devops/scripts/build_bundle.py` | Create the committed Git blob-based Versioned ZIP and Manifest · validate repository-local Python dependency closure before ZIP creation |
+| `.devops/scripts/validate_bundle.py` | Validate generated Versioned ZIP integrity · Manifest/file-set consistency · Source SHA · repository-local Python dependency completeness before Artifact Publish |
+| `.devops/codebuild/buildspec.yml` | Compile · Test · Ruff · run build_bundle.py · generated Artifact Contract validation · S3 Artifact Publish |
 | `.devops/scripts/compile_check.py` | Safe Python Compile check |
 
 Do not list `.devops/artifacts` outputs and one-time Artifacts in the catalog.
@@ -336,7 +337,10 @@ Based on the relative paths referenced by `appspec.yml`.
 
 | Item | Value |
 | --- | --- |
-| Bundle Include change | Update the Contract Test |
+| Bundle Include change | Update the Contract Test · local Python dependency closure must remain complete |
+| Bundle generator change | Validate deterministic ZIP and fail-closed dependency Gate |
+| Artifact validator change | Validate ZIP contract without importing MarketConnector runtime modules |
+| BuildSpec change | Artifact Contract must complete before S3 Publish |
 | Hook change | Verify `appspec.yml` reference consistency |
 | Shell change | Verify LF and `bash -n` |
 | Runtime files | Verify exclusion from the Bundle |
