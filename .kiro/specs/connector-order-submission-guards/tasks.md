@@ -2,176 +2,176 @@
 
 ## Overview
 
-이 계획은 브로커 주문 제출 경계의 방어 로직 4종을 순수 함수부터 상향식으로 구현하고, 각 순수 함수·가드 전이를 property 기반 테스트로 검증한 뒤, Claim 기반 `run()` 루프와 취소·정정 후처리에 통합한다.
+This plan implements the four defensive controls at the Broker order-submission boundary from the bottom up, beginning with pure functions. It validates each pure function and guarded transition with property-based tests, then integrates them into the Claim-based `run()` loop and cancellation/modification post-processing.
 
-구현 언어는 Python이며(대상 파일은 `connector_order_common.py`, `connector_strategy_order_execute.py`, `connector_cancel.py`), property 테스트는 Hypothesis를 사용한다. 모든 검증은 `requests.post`, token 함수, DB 함수를 mock으로 격리한 상태에서만 실행하고, 실제 broker/DB 호출은 수행하지 않는다.
+The implementation language is Python. Target files are `connector_order_common.py`, `connector_strategy_order_execute.py`, and `connector_cancel.py`. Property tests use Hypothesis. Every validation runs with `requests.post`, token functions, and DB functions isolated by mocks; no actual Broker or DB call is performed.
 
-property 테스트 태그 형식: **Feature: connector-order-submission-guards, Property {번호}: {property_text}**
+Property-test tag format: **Feature: connector-order-submission-guards, Property {number}: {property_text}**
 
-실행 순서: 아래 Task Dependency Graph는 참고용(병렬 스케줄링 정보)이며, 실제 구현은 Task 번호 순서로 진행한다. Task 1~2 완료 후 Checkpoint 3, Task 4~5 완료 후 Checkpoint 6, 이어서 Task 7~10, 마지막 Final Checkpoint 11 순이다.
+Execution order: the Task Dependency Graph below is informational parallel-scheduling data. Actual implementation follows task-number order: Tasks 1-2, Checkpoint 3, Tasks 4-5, Checkpoint 6, Tasks 7-10, then Final Checkpoint 11.
 
 ## Tasks
 
-- [x] 1. 수량 정규화·검증 순수 함수 구현 (C1)
-  - [x] 1.1 `connector_order_common.py`에 `normalize_order_qty(value) -> int`와 `QuantityValidationError(ValueError)` 구현
-    - 1 이상 양의 정수는 값 변경 없이 반환, 정수와 정확히 동일한 `Decimal`·문자열은 정수로 변환
-    - `type(value) is bool` 검사를 정수 판정 이전에 먼저 수행해 `bool` 거부
-    - 0·음수·소수부 있는 값·비숫자는 절사·반올림 없이 예외 발생
+- [x] 1. Implement the pure quantity normalization and validation function (C1)
+  - [x] 1.1 Implement `normalize_order_qty(value) -> int` and `QuantityValidationError(ValueError)` in `connector_order_common.py`
+    - Return positive integers of at least 1 without changing their value; convert `Decimal` and string values exactly equal to an integer.
+    - Reject `bool` by checking `type(value) is bool` before the integer check.
+    - Raise an exception without truncation or rounding for 0, negative, fractional, and non-numeric values.
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9_
 
-  - [x] 1.2 유효 수량 값 보존 property 테스트 작성
-    - **Property 1: 유효 수량은 값 보존 정규화된다**
+  - [x] 1.2 Add a value-preservation property test for valid quantities
+    - **Property 1: Valid quantities are normalized without changing their value**
     - **Validates: Requirements 1.1, 3.1, 3.7, 3.8**
-    - int, Decimal, str 생성기로 최소 100회 반복, 정규화 값이 전달 인자까지 보존됨을 확인
+    - Run at least 100 examples from int, Decimal, and str generators; confirm the normalized value remains unchanged through the call argument.
 
-  - [x] 1.3 무효 수량 거부 property 테스트 작성
-    - **Property 2: 무효 수량은 항상 거부된다**
+  - [x] 1.3 Add a rejection property test for invalid quantities
+    - **Property 2: Invalid quantities are always rejected**
     - **Validates: Requirements 3.2, 3.3, 3.4, 3.5, 3.6**
-    - 0·음수·소수·bool·비숫자 생성기로 `QuantityValidationError` 발생과 미반환 확인
+    - Generate 0, negative, fractional, bool, and non-numeric values; confirm `QuantityValidationError` is raised and no quantity is returned.
 
-- [x] 2. Fatal Max 검사 함수 구현 (C2)
-  - [x] 2.1 `resolve_fatal_max_order_qty() -> Optional[int]`, `check_fatal_max_order_qty(qty, limit)`, 구성 오류 예외 구현
-    - `STEP12_FATAL_MAX_ORDER_QTY` 미설정·`0`이면 `None`(비활성), 양의 정수면 상한 반환
-    - 음수·소수·비숫자는 `ConfigurationError`로 명시적 처리(조용히 무시·비활성 금지)
-    - 상한 초과 수량은 조정하지 않고 Fatal_Max 초과 오류 반환
-    - Fatal Max 순수 함수는 `connector_order_common.py`에 정의만 한다. `STEP12_FATAL_MAX_ORDER_QTY` 적용(enforcement)은 여기서 수행하지 않으며, 일반 `submit_cash_order()` 경로에 자동 연결하지 않는다
+- [x] 2. Implement Fatal Max check functions (C2)
+  - [x] 2.1 Implement `resolve_fatal_max_order_qty() -> Optional[int]`, `check_fatal_max_order_qty(qty, limit)`, and the configuration-error exception
+    - Return `None` when `STEP12_FATAL_MAX_ORDER_QTY` is unset or `0`; return the limit for a positive integer.
+    - Treat negative, fractional, and non-numeric values as explicit `ConfigurationError` cases; do not silently ignore or disable them.
+    - Return a Fatal_Max exceeded error without adjusting a quantity above the limit.
+    - Define the Fatal Max pure functions only in `connector_order_common.py`. Enforcement of `STEP12_FATAL_MAX_ORDER_QTY` does not occur here and is not automatically connected to the general `submit_cash_order()` path.
     - _Requirements: 3.10, 3.11, 3.12_
 
-  - [x] 2.2 Fatal_Max 구성값 해석 property 테스트 작성
-    - **Property 3: Fatal_Max 구성값 해석은 결정적으로 분기된다**
+  - [x] 2.2 Add a property test for Fatal_Max configuration resolution
+    - **Property 3: Fatal_Max configuration values branch deterministically**
     - **Validates: Requirements 3.10, 3.12**
 
-  - [x] 2.3 Fatal_Max 무조정 property 테스트 작성
-    - **Property 4: Fatal_Max 검사는 수량을 조정하지 않는다**
+  - [x] 2.3 Add a property test that Fatal_Max never adjusts quantity
+    - **Property 4: The Fatal_Max check does not adjust quantity**
     - **Validates: Requirements 3.11**
 
-  - [x] 2.4 검증 순서 property 테스트 작성
-    - **Property 5: 수량 검증은 Fatal_Max 검사보다 먼저 수행된다**
+  - [x] 2.4 Add a validation-order property test
+    - **Property 5: Quantity validation runs before the Fatal_Max check**
     - **Validates: Requirements 3.13, 3.14**
-    - 수량 검증(C1)을 Fatal Max보다 먼저 수행하는 조합 함수를 대상으로, 무효 수량 입력 시 수량 검증 오류가 우선 반환됨을 확인
+    - Test the composition that runs C1 before Fatal Max; an invalid quantity must return the quantity-validation error first.
 
-- [x] 3. Checkpoint - 수량 방어 로직 검증
-  - Ensure all tests pass, ask the user if questions arise.
+- [x] 3. Checkpoint - validate the quantity defenses
+  - Ensure all tests pass; ask the user if questions arise.
 
-- [x] 4. CANCEL/MODIFY 수량 Resolver 구현과 통합 (C6)
-  - [x] 4.1 `resolve_cancel_modify_quantity(action_type, qty, active_order_qty)`와 `CancelModifyPayloadError` 구현
-    - 부작용 없음(broker·DB 접근 없음), `(ord_qty, qty_all_ord_yn)` 반환
-    - CANCEL qty None → `("0","Y")`, CANCEL 1≤qty≤active → `(str(qty),"N")`, MODIFY 양의 정수 → `(str(qty),"N")`, MODIFY 생략 → `(str(active),"N")`
-    - CANCEL 0·음수·소수·초과, MODIFY 비양정수는 오류 발생, payload 미구성
+- [x] 4. Implement and integrate the CANCEL/MODIFY quantity Resolver (C6)
+  - [x] 4.1 Implement `resolve_cancel_modify_quantity(action_type, qty, active_order_qty)` and `CancelModifyPayloadError`
+    - No side effects or Broker/DB access; return `(ord_qty, qty_all_ord_yn)`.
+    - CANCEL with qty None → `("0","Y")`; CANCEL with integer 1≤qty≤active → `(str(qty),"N")`; MODIFY with positive integer → `(str(qty),"N")`; MODIFY with omitted qty → `(str(active),"N")`.
+    - Raise an error and build no payload for CANCEL 0/negative/fractional/excess and MODIFY non-positive-integer values.
     - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9_
 
-  - [x] 4.2 Resolver payload 구성 property 테스트 작성
-    - **Property 7: Cancel/Modify resolver는 계약대로 payload 수량을 구성한다**
+  - [x] 4.2 Add a property test for Resolver payload construction
+    - **Property 7: The Cancel/Modify resolver builds payload quantity according to the contract**
     - **Validates: Requirements 4.2, 4.3, 4.6, 4.7**
 
-  - [x] 4.3 Resolver 계약 위반 거부 property 테스트 작성
-    - **Property 8: Cancel/Modify resolver는 계약 위반을 거부한다**
+  - [x] 4.3 Add a property test that the Resolver rejects contract violations
+    - **Property 8: The Cancel/Modify resolver rejects contract violations**
     - **Validates: Requirements 4.4, 4.5, 4.8**
 
-  - [x] 4.4 Resolver 결정성·무부작용 property 테스트 작성
-    - **Property 9: Cancel/Modify resolver는 결정적이고 부작용이 없다**
+  - [x] 4.4 Add a determinism and side-effect-free property test
+    - **Property 9: The Cancel/Modify resolver is deterministic and side-effect free**
     - **Validates: Requirements 4.1, 4.9**
-    - 반복 호출 동일 결과, broker/DB mock `call_count == 0` 확인
+    - Confirm repeated calls return the same result and Broker/DB mock `call_count == 0`.
 
-  - [x] 4.5 `submit_rvsecncl_order()`의 인라인 수량 분기를 `resolve_cancel_modify_quantity` 호출로 대체
-    - resolver 결과로 `request_qty`와 `QTY_ALL_ORD_YN`을 채우고, payload 구성·브로커 호출·상태 기록 순서는 기존과 동일 유지
+  - [x] 4.5 Replace the inline quantity branch in `submit_rvsecncl_order()` with `resolve_cancel_modify_quantity`
+    - Populate `request_qty` and `QTY_ALL_ORD_YN` from the resolver; preserve the existing payload, Broker-call, and state-recording order.
     - _Requirements: 4.1_
 
-  - [x] 4.6 전량 취소 payload 예시 테스트 확장
-    - 기존 `tests/test_full_cancel_payload.py`를 mock 격리 방식으로 재사용·확장
+  - [x] 4.6 Extend the existing full-cancellation payload example test
+    - Reuse and extend `tests/test_full_cancel_payload.py` with the existing mock isolation.
     - _Requirements: 4.2_
 
-- [x] 5. 로컬 주문 요청 상태 단조성 보호 구현 (C7)
-  - [x] 5.1 `resolve_request_status_transition`과 `update_order_request_status_if_not_terminal(order_request_id, request_status, message)` 구현
-    - Terminal 집합(`FILLED`,`CANCELED`,`REJECTED`,`FAILED`) 역행 차단 조건부 UPDATE
-    - 동일 Terminal 재적용은 오류 없이 허용(no-op), 차단 시 성공 아닌 실패 지시 반환
-    - 기존 `update_order_request_status_only()`는 다른 경로 호환을 위해 유지
+- [x] 5. Implement local order-request status monotonicity protection (C7)
+  - [x] 5.1 Implement `resolve_request_status_transition` and `update_order_request_status_if_not_terminal(order_request_id, request_status, message)`
+    - Block regression from the Terminal set (`FILLED`,`CANCELED`,`REJECTED`,`FAILED`) with a conditional UPDATE.
+    - Allow reapplication of the same Terminal state as a no-op; return a failure indication when blocked.
+    - Preserve `update_order_request_status_only()` for compatibility with other paths.
     - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.8_
 
-  - [x] 5.2 상태 단조성 property 테스트 작성
-    - **Property 10: 로컬 주문 요청 상태는 Terminal에서 역행하지 않는다**
+  - [x] 5.2 Add a status-monotonicity property test
+    - **Property 10: Local order-request status never regresses from Terminal**
     - **Validates: Requirements 5.1, 5.2, 5.3, 5.4, 5.5, 5.6**
 
-  - [x] 5.3 `apply_rvsecncl_parent_status_after_success()`와 CANCEL_ACCEPTED 전이에 가드 함수 적용
-    - 비-Terminal → `CANCEL_ACCEPTED`, 비-Terminal → `CANCELED` 기존 정상 전이 유지
+  - [x] 5.3 Apply the guarded function to `apply_rvsecncl_parent_status_after_success()` and the CANCEL_ACCEPTED transition
+    - Preserve normal non-Terminal → `CANCEL_ACCEPTED` and non-Terminal → `CANCELED` transitions.
     - _Requirements: 5.7_
 
-  - [x] 5.4 후처리 상태 전이 예시 테스트 작성
-    - 비-Terminal → CANCEL_ACCEPTED/CANCELED 전이 확인
+  - [x] 5.4 Add post-processing state-transition example tests
+    - Confirm non-Terminal → CANCEL_ACCEPTED/CANCELED transitions.
     - _Requirements: 5.7_
 
-- [x] 6. Checkpoint - 취소·정정 경로 검증
-  - Ensure all tests pass, ask the user if questions arise.
+- [x] 6. Checkpoint - validate the cancellation/modification path
+  - Ensure all tests pass; ask the user if questions arise.
 
-- [x] 7. Execution Order Claim과 상태 전이 가드 구현 (C3, C4)
-  - [x] 7.1 `connector_strategy_order_execute.py`에 `SUBMITTING_STATUS = "SUBMITTING"` 상수와 `claim_strategy_execution_order(execution_order_id) -> Optional[Dict]` 구현
-    - 조건: `id = %s AND execution_status = 'REQUESTED' AND connector_order_request_id IS NULL`, `SUBMITTING`으로 전이 후 `RETURNING`
-    - 정확히 1행 갱신 시 그 주문만 반환, 0행이면 상태 불변
+- [x] 7. Implement the Execution Order Claim and status-transition guards (C3, C4)
+  - [x] 7.1 Implement `SUBMITTING_STATUS = "SUBMITTING"` and `claim_strategy_execution_order(execution_order_id) -> Optional[Dict]` in `connector_strategy_order_execute.py`
+    - Condition: `id = %s AND execution_status = 'REQUESTED' AND connector_order_request_id IS NULL`; transition to `SUBMITTING` and use `RETURNING`.
+    - Return the order only for exactly one updated row; preserve state when zero rows are updated.
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.7_
 
-  - [x] 7.2 `mark_strategy_execution_order_submitted`와 `mark_strategy_execution_order_failed` 가드 조정
-    - submitted 가드를 `execution_status = 'SUBMITTING'`으로 변경(그 외 0행)
-    - failed에 `NOT IN ('SUBMITTED','FILLED','CANCELED','REJECTED','FAILED')` 가드 추가(Terminal 덮어쓰기 차단)
+  - [x] 7.2 Adjust the guards in `mark_strategy_execution_order_submitted` and `mark_strategy_execution_order_failed`
+    - Change the submitted guard to `execution_status = 'SUBMITTING'`; all other states return zero rows.
+    - Add `NOT IN ('SUBMITTED','FILLED','CANCELED','REJECTED','FAILED')` to failed so Terminal status is not overwritten.
     - _Requirements: 2.8, 2.9, 2.10, 2.11_
 
-  - [x] 7.3 상태 가드 전이 property 테스트 작성
-    - **Property 6: execution_status 가드 전이는 Terminal 상태를 역행시키지 않는다**
+  - [x] 7.3 Add a status-guard transition property test
+    - **Property 6: execution_status guard transitions never regress a Terminal state**
     - **Validates: Requirements 2.3, 2.5, 2.6, 2.8, 2.9, 2.10, 2.11**
-    - in-memory fake DB store로 임의 초기 `execution_status` 생성, Claim·mark 전이 확인
+    - Generate arbitrary initial `execution_status` values in an in-memory fake DB store and validate Claim/mark transitions.
 
-  - [x] 7.4 Claim·mark 예시 테스트 작성
-    - `SUBMITTING_STATUS` 값·참조 확인, Claim 선수행과 브로커 `call_count == 1` 확인
+  - [x] 7.4 Add Claim and mark example tests
+    - Confirm the `SUBMITTING_STATUS` value/reference, Claim-before-call ordering, and Broker `call_count == 1`.
     - _Requirements: 2.1, 2.2, 2.4_
 
-- [x] 8. Claim 기반 run() 처리 루프 통합 (C5)
-  - [x] 8.1 `--execute` 루프를 정규화·Fatal Max → Claim → 브로커 제출 → submitted/failed 순서로 재구성
-    - 검증 실패·payload 실패 시 브로커 미호출 단위 실패 기록, Claim 0행이면 중복 차단 skip 기록 후 계속
-    - Claim DB 오류면 브로커 미호출·실패 단위 결과 반환, Dry_Run에서는 Claim과 DB 변경 미수행
-    - C1·C2 함수를 import해 동일 의미로 사용
-    - `STEP12_FATAL_MAX_ORDER_QTY` 적용(enforcement)은 이 전략 주문 경로(`connector_strategy_order_execute.py`의 `--execute` 루프)에만 연결한다. 일반 `submit_cash_order()` cash-order 제출 경로에는 적용하지 않는다
+- [x] 8. Integrate the Claim-based `run()` processing loop (C5)
+  - [x] 8.1 Reorder the `--execute` loop as normalize/Fatal Max → Claim → Broker submission → submitted/failed
+    - On validation or payload failure, do not call the Broker and record a failed unit. On zero-row Claim, record a skipped duplicate block and continue.
+    - On Claim DB error, do not call the Broker and return a failed unit. Dry_Run performs neither Claim nor DB change.
+    - Import and reuse the C1/C2 functions to preserve identical semantics.
+    - Enforce `STEP12_FATAL_MAX_ORDER_QTY` only on the strategy-order path in the `connector_strategy_order_execute.py` `--execute` loop, not on the general `submit_cash_order()` path.
     - _Requirements: 2.5, 2.6, 2.12, 2.13, 3.9_
 
-  - [x] 8.2 배치 지속·Dry_Run·Claim DB 오류 예시 테스트 작성
-    - 혼합 배치 전체 순회(2.6), Dry_Run claim/mark `call_count == 0`(2.12), Claim DB 오류 시 브로커 미호출(2.13)
+  - [x] 8.2 Add batch-continuation, Dry_Run, and Claim DB-error example tests
+    - Validate full traversal of a mixed batch (2.6), Dry_Run claim/mark `call_count == 0` (2.12), and no Broker call after a Claim DB error (2.13).
     - _Requirements: 2.6, 2.12, 2.13_
 
-- [x] 9. connector_cancel.py 문서 정합 (C8)
-  - [x] 9.1 docstring과 CLI help에 수량 생략=전량 취소, 수량 지정=부분 취소 반영
-    - 전량 취소 TR ID·취소 코드를 Paper 환경 동작 확인 수준으로 기술, 실 환경 검증 주장으로 확장하지 않음
-    - 기존 `--yes` 차단과 `cancel_order()` 시그니처는 변경하지 않음
+- [x] 9. Align `connector_cancel.py` documentation (C8)
+  - [x] 9.1 State in the docstring and CLI help that omitted quantity means full cancellation and specified quantity means partial cancellation
+    - Describe the full-cancellation TR ID and cancellation code only as confirmed Paper-environment behavior; do not claim live validation.
+    - Preserve the existing `--yes` block and `cancel_order()` signature.
     - _Requirements: 4.10, 4.11_
 
-  - [x] 9.2 문서 계약 스모크 테스트 작성
-    - docstring·CLI help 텍스트 계약 정적 확인
+  - [x] 9.2 Add a documentation-contract smoke test
+    - Statically verify the docstring and CLI help text contract.
     - _Requirements: 4.10, 4.11_
 
-- [x] 10. 검증 안전 경계 하네스 구성 (Requirement 6)
-  - [x] 10.1 conftest fixture로 `requests.post`·token 함수·DB 함수 사전 mock 확인과 실제 외부 side-effect 진입점 call_count 가드 구현
-    - 검증 시작 시 mock 미대체 대상을 실제 호출 이전에 즉시 실패로 보고
-    - 실제 `requests.post`·token 함수·운영 DB 호출은 모든 시나리오에서 `call_count == 0`을 항상 assert(conftest fixture가 이 진입점들을 가드)
-    - mock broker 함수 호출은 시나리오별 기대값을 따른다: 차단·skip 시나리오는 `call_count == 0`, 정상 Claim 성공 시나리오는 정확히 `call_count == 1`
-    - mock broker 함수 호출을 무조건 0으로 강제하지 않고, 실제 외부 side-effect 진입점만 0으로 가드하며 시나리오별 mock broker 호출 assert를 허용
+- [x] 10. Build the validation safety-boundary harness (Requirement 6)
+  - [x] 10.1 Implement proactive mock checks and actual external-side-effect call-count guards for `requests.post`, token functions, and DB functions in a conftest fixture
+    - Report an unmocked target and fail before any actual call.
+    - Always assert actual `requests.post`, token-function, and operating-DB entry-point `call_count == 0` in every scenario.
+    - Mock Broker calls follow scenario-specific expectations: blocked/skipped scenarios use `call_count == 0`; a successful Claim uses exactly `call_count == 1`.
+    - Do not force mock Broker calls to zero globally; guard actual side-effect entry points while allowing scenario-specific mock assertions.
     - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
-  - [x] 10.2 검증 성공 기준 실행 확인
-    - `python -m py_compile <대상 파일>`, `pytest`(mock 격리), `ruff check`로 compile·test·lint 위반 0 확인
+  - [x] 10.2 Confirm the validation success criteria
+    - Use `python -m py_compile <대상 파일>`, `pytest` with mock isolation, and `ruff check`; confirm zero compile, test, and lint violations.
     - _Requirements: 6.5, 6.6_
 
-- [x] 11. Final checkpoint - 전체 검증
-  - Ensure all tests pass, ask the user if questions arise.
+- [x] 11. Final checkpoint - run the full validation
+  - Ensure all tests pass; ask the user if questions arise.
 
 ## Notes
 
-- 이 기능은 브로커 주문 경계의 안전 로직이므로 모든 테스트(property·unit·regression) sub-task는 필수이며 건너뛸 수 없다. 선택(`*`) 표시 sub-task는 두지 않는다.
-- 실제 구현은 아래 Task Dependency Graph의 병렬 wave가 아니라 Task 번호 순서로 진행한다: Task 1~2 완료 후 Checkpoint 3, Task 4~5 완료 후 Checkpoint 6, 이어서 Task 7~10, 마지막 Final Checkpoint 11.
-- 각 task는 추적성을 위해 특정 requirement를 참조한다.
-- property 테스트는 순수 함수 또는 in-memory fake DB store 기반 model 테스트로 각 최소 100회 반복한다.
-- 모든 테스트는 `requests.post`·token·DB 함수를 mock으로 격리한 상태에서만 실행하며 실제 broker/DB 호출을 하지 않는다.
-- 각 correctness property는 단일 property 기반 테스트로 구현한다.
+- This feature is safety logic at the Broker order boundary, so every property, unit, and regression test subtask is mandatory and cannot be skipped. There are no optional (`*`) subtasks.
+- Implementation follows task-number order rather than the parallel waves in the Task Dependency Graph: Tasks 1-2, Checkpoint 3, Tasks 4-5, Checkpoint 6, Tasks 7-10, then Final Checkpoint 11.
+- Each task references specific requirements for traceability.
+- Every property test runs at least 100 examples against a pure function or in-memory fake DB store.
+- Every test isolates `requests.post`, token functions, and DB functions with mocks and performs no actual Broker or DB call.
+- Each correctness property is implemented as one property-based test.
 
 ## Task Dependency Graph
 
-아래 그래프는 참고용(informational)이다. 실제 실행은 병렬 wave가 아니라 Task 번호 순서(1→2→Checkpoint 3→4→5→Checkpoint 6→7→8→9→10→Final Checkpoint 11)를 따른다.
+The graph below is informational. Actual execution follows task-number order rather than parallel waves: 1→2→Checkpoint 3→4→5→Checkpoint 6→7→8→9→10→Final Checkpoint 11.
 
 ```json
 {

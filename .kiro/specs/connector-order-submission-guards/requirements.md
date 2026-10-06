@@ -2,140 +2,140 @@
 
 ## Introduction
 
-이 기능은 MarketConnector가 브로커(KIS) 주문 제출 경계에서만 최소한의 방어 로직을 추가하는 것을 목적으로 한다.
+This feature adds the minimum defensive logic only at the MarketConnector broker (KIS) order-submission boundary.
 
-핵심 책임 원칙은 다음과 같다.
+The core responsibility principles are as follows.
 
-- MarketConnector는 Execution이 결정한 주문 계획을 다시 판단하지 않는다. 종목(ticker), 매매 방향(side), 수량(quantity), 주문 순서(order sequence), 주문 방식(order method)은 Execution의 결정을 신뢰한다.
-- MarketConnector는 현금 재배분, 자동 수량 축소, 시장가 버퍼 재계산, 전략 우선순위 변경을 수행하지 않는다.
-- MarketConnector는 일반적인 신규 주문 금액 상한을 도입하지 않는다.
-- MarketConnector는 브로커 제출 경계에서 다음 4가지 치명적 사고만 차단한다: 동일 Execution Order의 중복 제출, 명백히 잘못된 수량, Broker payload 계약 위반, Terminal 상태의 역행.
+- MarketConnector does not reassess the order plan decided by Execution. It trusts Execution's decisions for ticker, side, quantity, order sequence, and order method.
+- MarketConnector does not perform cash redistribution, automatic quantity reduction, market-order buffer recalculation, or strategy-priority changes.
+- MarketConnector does not introduce a general maximum amount for new orders.
+- At the broker-submission boundary, MarketConnector blocks only four critical accident classes: duplicate submission of the same Execution Order, clearly invalid quantity, Broker payload contract violations, and regression from a Terminal state.
 
-이 문서는 위 원칙을 유지하면서 4개 영역(중복 제출 차단, 최소 수량 안전 검증, 전량/부분 취소 payload 계약, 로컬 상태 단조성)의 요구사항을 정의한다.
+While preserving these principles, this document defines requirements for four areas: duplicate-submission blocking, minimum quantity safety validation, the full/partial cancellation payload contract, and local state monotonicity.
 
-대상 파일은 `connector_strategy_order_execute.py`, `connector_order_common.py`, `connector_cancel.py`와 이들의 직접 관련 기존 테스트 파일로 제한한다.
+The target files are limited to `connector_strategy_order_execute.py`, `connector_order_common.py`, `connector_cancel.py`, and their directly related existing test files.
 
 ## Glossary
 
-- **MarketConnector**: 전략 주문을 브로커 API로 제출하고 상태를 기록하는 시스템. 이 문서에서 SHALL의 주체가 되는 대상 시스템.
-- **Execution**: 주문 계획(종목, side, 수량, 순서, 주문 방식)을 결정하는 외부 계층. MarketConnector는 Execution의 결정을 신뢰한다.
-- **Broker**: 한국투자증권(KIS) 국내 주식 주문 API. 실제 BUY/SELL/취소/정정 호출 대상.
-- **Execution_Order**: `strategy_execution_order` 테이블의 단일 주문 행. `execution_status` 상태값을 가진다.
-- **Claim**: 브로커 호출 직전에 `strategy_execution_order`를 조건부로 원자적으로 UPDATE하여 처리 권한을 확보하는 동작.
-- **SUBMITTING_STATUS**: 값이 `"SUBMITTING"`인 상수. Claim 성공 후의 `execution_status` 값.
-- **REQUESTED_STATUS**: 값이 `"REQUESTED"`인 상수. Claim 이전 대상 상태.
-- **SUBMITTED_STATUS**: 값이 `"SUBMITTED"`인 상수. 브로커 제출 성공 후의 상태.
-- **FAILED_STATUS**: 값이 `"FAILED"`인 상수. 처리 실패 후의 상태.
-- **Terminal_Status**: 더 이상 되돌리면 안 되는 최종 상태. `SUBMITTED`, `FILLED`, `CANCELED`, `REJECTED`, `FAILED`를 포함한다.
-- **Normalized_Quantity**: 양의 정수(1 이상)로 정규화된 주문 수량.
-- **Fatal_Max_Order_Qty**: 환경변수 `STEP12_FATAL_MAX_ORDER_QTY`로 설정하는 데이터 손상 방지용 비상 상한. 전략 상한이 아니다.
-- **Dry_Run**: `--execute`가 없는 실행 모드. 계획만 출력하고 Claim과 DB 상태 변경을 수행하지 않는다.
-- **Cancel_Modify_Quantity_Resolver**: CANCEL/MODIFY 요청의 수량 분기를 계산하는 순수 함수.
-- **Active_Order**: `submit_rvsecncl_order()`가 정정/취소 대상으로 해석한 현재 활성 주문.
-- **Order_Request_Status_Updater**: `update_order_request_status_only()` 함수. 로컬 주문 요청 상태를 갱신한다.
+- **MarketConnector**: The system that submits strategy orders to the Broker API and records their status. It is the subject of SHALL statements in this document.
+- **Execution**: The external layer that decides the order plan, including ticker, side, quantity, sequence, and method. MarketConnector trusts Execution's decision.
+- **Broker**: The Korea Investment & Securities (KIS) domestic-stock order API, which receives actual BUY, SELL, cancellation, and modification calls.
+- **Execution_Order**: One order row in the `strategy_execution_order` table. It has an `execution_status` value.
+- **Claim**: The operation that acquires processing ownership immediately before the Broker call by conditionally and atomically updating `strategy_execution_order`.
+- **SUBMITTING_STATUS**: A constant whose value is `"SUBMITTING"`. It is the `execution_status` after a successful Claim.
+- **REQUESTED_STATUS**: A constant whose value is `"REQUESTED"`. It is the target status before a Claim.
+- **SUBMITTED_STATUS**: A constant whose value is `"SUBMITTED"`. It is the status after successful Broker submission.
+- **FAILED_STATUS**: A constant whose value is `"FAILED"`. It is the status after processing fails.
+- **Terminal_Status**: A final status that must not regress. It includes `SUBMITTED`, `FILLED`, `CANCELED`, `REJECTED`, and `FAILED`.
+- **Normalized_Quantity**: An order quantity normalized to a positive integer of at least 1.
+- **Fatal_Max_Order_Qty**: An emergency data-corruption guard configured by `STEP12_FATAL_MAX_ORDER_QTY`. It is not a strategy limit.
+- **Dry_Run**: Execution without `--execute`. It prints the plan and performs neither Claim nor DB status changes.
+- **Cancel_Modify_Quantity_Resolver**: A pure function that determines the quantity branch for CANCEL/MODIFY requests.
+- **Active_Order**: The currently active order that `submit_rvsecncl_order()` interprets as the modification/cancellation target.
+- **Order_Request_Status_Updater**: The `update_order_request_status_only()` function, which updates local order-request status.
 
 ## Requirements
 
-### Requirement 1: 책임 경계 유지
+### Requirement 1: Preserve the Responsibility Boundary
 
-**User Story:** 운영자로서, MarketConnector가 Execution의 주문 결정을 재판단하지 않기를 원한다. 그래야 전략 계층과 실행 계층의 책임 경계가 유지된다.
-
-#### Acceptance Criteria
-
-1. WHEN 특정 Execution_Order에 대해 브로커 주문을 호출하면, THE MarketConnector SHALL Execution이 결정한 종목, side, 수량, 주문 방식과 동일한 값을 브로커 요청에 사용한다.
-2. WHEN 여러 Execution_Order를 처리하면, THE MarketConnector SHALL Execution이 결정한 주문 순서와 동일한 순서로 브로커 주문을 호출한다.
-3. THE MarketConnector SHALL 현금 재배분, 자동 수량 축소, 시장가 버퍼 재계산, 전략 우선순위 변경을 수행하지 않는다.
-3a. WHERE Execution이 결정한 주문이 특정 계좌의 가용 현금을 초과하면, THE MarketConnector SHALL 현금 재배분으로 주문을 실행 가능하게 만들지 않고, 해당 주문을 재배분 없이 그대로 처리하여 결과(브로커 거부 포함)를 기록한다.
-4. THE MarketConnector SHALL 일반적인 신규 주문 금액 상한을 도입하지 않는다.
-5. THE MarketConnector SHALL 기존 Retry Normalizer, Rate Limit 재시도, 주문 간 Sleep 동작을 변경하지 않고 유지한다.
-
-### Requirement 2: 동일 Execution Order 중복 제출 차단
-
-**User Story:** 운영자로서, 동일한 Execution Order가 브로커에 중복 제출되지 않기를 원한다. 그래야 동일 주문의 이중 체결 사고를 방지할 수 있다.
+**User Story:** As an operator, I want MarketConnector not to reassess Execution's order decision, so the responsibility boundary between the strategy and execution layers remains intact.
 
 #### Acceptance Criteria
 
-1. THE MarketConnector SHALL `SUBMITTING_STATUS = "SUBMITTING"` 상수를 정의하고, Claim 대상 조회와 상태 전이에서 이 상수를 사용한다.
-2. WHEN 특정 Execution_Order에 대해 브로커 주문을 제출하기 직전이면, THE MarketConnector SHALL 브로커 주문 호출 이전에 해당 Execution_Order에 대한 Claim을 먼저 수행한다.
-3. WHERE 대상 Execution_Order의 id가 일치하고 `execution_status = 'REQUESTED'`이며 `connector_order_request_id IS NULL`인 행이 존재하면, THE MarketConnector SHALL 단일 조건부 UPDATE로 해당 행의 `execution_status`를 `'SUBMITTING'`으로 전이하고 갱신된 행을 반환한다.
-4. WHEN Claim이 정확히 한 행을 `'SUBMITTING'`으로 갱신하면, THE MarketConnector SHALL 해당 Execution_Order에 대해 브로커 주문을 정확히 1회 호출한다.
-5. IF Claim이 갱신한 행 수가 0이면, THEN THE MarketConnector SHALL 해당 Execution_Order에 대해 브로커 주문 API를 호출하지 않고, `execution_status`가 갱신 이전 값과 정확히 동일하게 유지되도록(`execution_status = execution_status_next`) 상태 변경 동작을 수행하지 않으며, 해당 주문을 중복 제출 차단(skip)으로 표시한다.
-6. IF Claim이 갱신한 행 수가 0이면, THEN THE MarketConnector SHALL 전체 배치를 실패로 종료하지 않고 해당 주문을 중복 제출 차단 단위 결과로 기록한 뒤 나머지 대상 주문 처리를 계속한다.
-7. WHEN 동일한 Execution_Order에 대해 둘 이상의 실행이 동시에 Claim을 시도하면, THE MarketConnector SHALL 정확히 하나의 실행만 조건부 UPDATE에 성공시켜 그 실행만 브로커 주문을 호출하고, 나머지 실행은 갱신 행 수 0으로 처리한다.
-8. WHILE 대상 Execution_Order가 `SUBMITTING` 상태이면, WHEN `mark_strategy_execution_order_submitted()`가 호출되면, THE MarketConnector SHALL 해당 주문의 `execution_status`를 `SUBMITTED`로 전이한다.
-9. IF `mark_strategy_execution_order_submitted()` 호출 시 대상 Execution_Order가 `SUBMITTING` 상태가 아니면, THEN THE MarketConnector SHALL `execution_status`를 `SUBMITTED`로 전이하지 않고 기존 상태를 유지한다.
-10. WHEN `mark_strategy_execution_order_failed()`가 호출되면, THE MarketConnector SHALL 해당 호출 대상 Execution_Order의 `execution_status`를 `FAILED`로 전이한다.
-11. IF `mark_strategy_execution_order_failed()` 호출 시 대상 Execution_Order가 이미 `SUBMITTED` 또는 `FAILED`(Terminal_Status)이면, THEN THE MarketConnector SHALL 그 상태를 `FAILED`로 덮어쓰지 않고 기존 상태를 유지한다.
-12. WHILE 실행 모드가 Dry_Run이면, THE MarketConnector SHALL Claim 조건부 UPDATE와 모든 `execution_status` DB 변경을 수행하지 않는다.
-13. IF Claim 조건부 UPDATE 실행이 DB 오류로 실패하면, THEN THE MarketConnector SHALL 해당 Execution_Order에 대해 브로커 주문을 호출하지 않고 그 주문을 실패 단위 결과로 처리하며 오류를 나타내는 결과를 반환한다.
+1. WHEN a Broker order is called for an Execution_Order, THE MarketConnector SHALL use the exact ticker, side, quantity, and order method decided by Execution in the Broker request.
+2. WHEN multiple Execution_Orders are processed, THE MarketConnector SHALL call Broker orders in the same order sequence decided by Execution.
+3. THE MarketConnector SHALL NOT perform cash redistribution, automatic quantity reduction, market-order buffer recalculation, or strategy-priority changes.
+3a. WHERE an order decided by Execution exceeds the available cash of an account, THE MarketConnector SHALL NOT make the order executable through cash redistribution. It SHALL process the order unchanged and record the result, including Broker rejection.
+4. THE MarketConnector SHALL NOT introduce a general maximum amount for new orders.
+5. THE MarketConnector SHALL preserve the existing Retry Normalizer, Rate Limit retry, and inter-order Sleep behavior without change.
 
-### Requirement 3: 최소 수량 안전 검증
+### Requirement 2: Block Duplicate Submission of the Same Execution Order
 
-**User Story:** 운영자로서, 명백히 잘못된 수량이 브로커에 전달되지 않기를 원한다. 그래야 데이터 손상으로 인한 잘못된 주문을 방지할 수 있다.
+**User Story:** As an operator, I want the same Execution Order not to be submitted to the Broker more than once, so duplicate-fill incidents are prevented.
 
 #### Acceptance Criteria
 
-1. WHERE 수량이 1 이상의 양의 정수이면, THE MarketConnector SHALL 해당 수량을 값 변경 없이 Normalized_Quantity로 허용한다.
-2. IF 수량이 0이면, THEN THE MarketConnector SHALL 브로커 주문을 호출하지 않고 요청을 거부하며 수량 검증 오류를 호출자에게 반환한다.
-3. IF 수량이 음수이면, THEN THE MarketConnector SHALL 브로커 주문을 호출하지 않고 요청을 거부하며 수량 검증 오류를 반환한다.
-4. IF 수량이 정수가 아닌 소수 값이면, THEN THE MarketConnector SHALL 소수부를 절사하거나 반올림하지 않고 브로커 주문을 호출하지 않으며 수량 검증 오류를 반환한다.
-5. IF 수량이 bool 값이면, THEN THE MarketConnector SHALL 브로커 주문을 호출하지 않고 요청을 거부하며 수량 검증 오류를 반환한다.
-6. IF 수량이 숫자로 해석할 수 없는 값이면, THEN THE MarketConnector SHALL 브로커 주문을 호출하지 않고 요청을 거부하며 수량 검증 오류를 반환한다.
-7. WHERE 수량이 정수와 정확히 동일한 Decimal 또는 문자열 값이면, THE MarketConnector SHALL 해당 값을 1 이상의 정수 수량으로 변환하여 값 변경 없이 허용한다.
-8. THE MarketConnector SHALL Normalized_Quantity를 브로커 호출까지 동일하게 전달하고, 소수부 절사나 수량 재계산·축소를 수행하지 않는다.
-9. THE MarketConnector SHALL criterion 1-8의 수량 정규화 및 검증 의미를 `connector_strategy_order_execute.py`와 `connector_order_common.py`에서 동일하게 적용한다.
-10. WHERE 환경변수 `STEP12_FATAL_MAX_ORDER_QTY`가 설정되지 않았거나 값이 0이면, THE MarketConnector SHALL Fatal_Max_Order_Qty 검사를 비활성화한다.
-11. IF `STEP12_FATAL_MAX_ORDER_QTY`가 양수이고 BUY/SELL 수량이 그 값을 초과하면, THEN THE MarketConnector SHALL 수량을 상한으로 조정하지 않고 브로커 주문을 호출하지 않으며 Fatal_Max 초과 오류를 반환한다.
-12. IF `STEP12_FATAL_MAX_ORDER_QTY` 값이 미설정과 0을 제외하고 양의 정수로 해석할 수 없으면(음수, 소수, 비숫자), THEN THE MarketConnector SHALL 이를 명시적 구성 오류로 처리하고 조용히 무시하거나 검사를 비활성화하지 않는다.
-13. THE MarketConnector SHALL criterion 1-8의 수량 검증을 Fatal_Max_Order_Qty 검사보다 먼저 수행한다.
-14. IF 수량 검증(criterion 2-6)이 실패하면, THEN THE MarketConnector SHALL Fatal_Max_Order_Qty 검사를 수행하지 않고 항상 수량 검증 오류를 먼저 반환한다.
+1. THE MarketConnector SHALL define `SUBMITTING_STATUS = "SUBMITTING"` and use it in Claim target queries and `execution_status` transitions.
+2. WHEN a Broker order is about to be submitted for an Execution_Order, THE MarketConnector SHALL perform the Claim for that Execution_Order before calling the Broker.
+3. WHERE a row exists whose Execution_Order id matches, `execution_status = 'REQUESTED'`, and `connector_order_request_id IS NULL`, THE MarketConnector SHALL transition `execution_status` to `'SUBMITTING'` with one conditional UPDATE and return the updated row.
+4. WHEN the Claim updates exactly one row to `'SUBMITTING'`, THE MarketConnector SHALL call the Broker exactly once for that Execution_Order.
+5. IF the Claim updates zero rows, THEN THE MarketConnector SHALL NOT call the Broker API for that Execution_Order, SHALL NOT perform a status-changing operation so that `execution_status` remains exactly equal to its pre-update value (`execution_status = execution_status_next`), and SHALL mark the order as skipped because duplicate submission was blocked.
+6. IF the Claim updates zero rows, THEN THE MarketConnector SHALL NOT fail the entire batch. It SHALL record a duplicate-submission-blocked unit result and continue processing the remaining target orders.
+7. WHEN two or more executions concurrently attempt to Claim the same Execution_Order, THE MarketConnector SHALL allow exactly one execution to succeed in the conditional UPDATE and call the Broker. All other executions SHALL be handled as zero-row updates.
+8. WHILE the target Execution_Order is `SUBMITTING`, WHEN `mark_strategy_execution_order_submitted()` is called, THE MarketConnector SHALL transition its `execution_status` to `SUBMITTED`.
+9. IF the target Execution_Order is not `SUBMITTING` when `mark_strategy_execution_order_submitted()` is called, THEN THE MarketConnector SHALL NOT transition it to `SUBMITTED` and SHALL preserve the existing status.
+10. WHEN `mark_strategy_execution_order_failed()` is called, THE MarketConnector SHALL transition the target Execution_Order's `execution_status` to `FAILED`.
+11. IF the target Execution_Order is already `SUBMITTED` or `FAILED` (Terminal_Status) when `mark_strategy_execution_order_failed()` is called, THEN THE MarketConnector SHALL NOT overwrite it with `FAILED` and SHALL preserve the existing status.
+12. WHILE the execution mode is Dry_Run, THE MarketConnector SHALL NOT perform the Claim conditional UPDATE or any `execution_status` DB change.
+13. IF the Claim conditional UPDATE fails with a DB error, THEN THE MarketConnector SHALL NOT call the Broker for that Execution_Order. It SHALL process the order as a failed unit and return a result that represents the error.
 
-### Requirement 4: 전량/부분 취소 및 정정 payload 계약
+### Requirement 3: Minimum Quantity Safety Validation
 
-**User Story:** 개발자로서, CANCEL과 MODIFY 요청의 수량 분기를 검증 가능한 순수 함수로 분리하기를 원한다. 그래야 Broker payload 계약 위반을 브로커 호출 전에 차단할 수 있다.
-
-#### Acceptance Criteria
-
-1. THE MarketConnector SHALL CANCEL/MODIFY 수량 분기를 Cancel_Modify_Quantity_Resolver 순수 함수로 분리하고, 이 함수는 브로커 호출과 DB 쓰기 같은 부작용을 수행하지 않는다.
-2. WHEN action이 CANCEL이고 수량이 None이면, THE Cancel_Modify_Quantity_Resolver SHALL `ORD_QTY="0"`과 `QTY_ALL_ORD_YN="Y"`로 전량 취소 payload를 구성한다.
-3. WHEN action이 CANCEL이고 수량이 Active_Order의 `order_qty` 이하인 1 이상의 정수이면, THE Cancel_Modify_Quantity_Resolver SHALL 해당 정수를 `ORD_QTY`로 하고 `QTY_ALL_ORD_YN="N"`으로 부분 취소 payload를 구성한다.
-4. IF action이 CANCEL이고 지정된 수량이 0, 음수 또는 소수이면, THEN THE Cancel_Modify_Quantity_Resolver SHALL 오류를 발생시키고 payload를 구성하지 않으며 브로커 호출로 진행하지 않는다.
-5. IF action이 CANCEL이고 지정된 부분 취소 수량이 Active_Order의 `order_qty`보다 크면, THEN THE Cancel_Modify_Quantity_Resolver SHALL 오류를 발생시키고 payload를 구성하지 않는다.
-6. WHEN action이 MODIFY이고 수량이 1 이상의 양의 정수로 지정되면, THE Cancel_Modify_Quantity_Resolver SHALL 해당 정수 수량과 `QTY_ALL_ORD_YN="N"`으로 정정 payload를 구성한다.
-7. WHEN action이 MODIFY이고 수량이 생략되면, THE Cancel_Modify_Quantity_Resolver SHALL Active_Order의 기존 수량을 사용하고 `QTY_ALL_ORD_YN="N"`을 유지한다.
-8. IF action이 MODIFY이고 정정 수량이 양의 정수가 아니면, THEN THE Cancel_Modify_Quantity_Resolver SHALL 오류를 발생시키고 payload를 구성하지 않는다.
-9. WHEN 동일한 입력으로 Cancel_Modify_Quantity_Resolver를 여러 번 호출하면, THE Cancel_Modify_Quantity_Resolver SHALL 동일한 payload 또는 동일한 오류를 결정적으로 반환한다.
-10. THE MarketConnector SHALL `connector_cancel.py`의 docstring과 CLI help에서 수량 생략은 전량 취소, 수량 지정은 부분 취소임을 반영한다.
-11. THE MarketConnector SHALL `connector_cancel.py` 문서에서 전량 취소가 현재 TR ID와 취소 코드로 Paper 환경에서 동작 확인되었음을 반영하고, 실 환경 검증 주장으로 확장하지 않는다.
-
-### Requirement 5: 로컬 주문 요청 상태 단조성
-
-**User Story:** 운영자로서, 로컬 주문 요청 상태가 Terminal 상태에서 이전 상태로 역행하지 않기를 원한다. 그래야 체결/취소 완료 주문이 잘못된 상태로 되돌아가는 것을 방지할 수 있다.
+**User Story:** As an operator, I want clearly invalid quantities to be blocked before they reach the Broker, so orders caused by corrupted data are prevented.
 
 #### Acceptance Criteria
 
-1. WHEN `submit_rvsecncl_order()` 경로에서 대상 주문 요청의 상태 갱신이 요청되고 현재 `request_status`가 Terminal 상태(`FILLED`, `CANCELED`, `REJECTED`, `FAILED`) 중 하나이면, THE Order_Request_Status_Updater SHALL 요청된 상태가 현재 Terminal 상태와 다를 경우 갱신을 수행하지 않고 기존 `request_status`를 변경 없이 유지한다.
-2. IF `submit_rvsecncl_order()` 경로에서 현재 상태가 `FILLED`이고 요청된 상태가 `FILLED`이 아니면, THEN THE Order_Request_Status_Updater SHALL 해당 갱신을 차단하고 `FILLED` 상태를 그대로 유지한다.
-3. IF `submit_rvsecncl_order()` 경로에서 현재 상태가 `CANCELED`이고 요청된 상태가 `CANCELED`이 아니면, THEN THE Order_Request_Status_Updater SHALL 해당 갱신을 차단하고 `CANCELED` 상태를 그대로 유지한다.
-4. WHERE `submit_rvsecncl_order()` 경로에서 현재 Terminal 상태와 동일한 상태값이 다시 적용되면, THE Order_Request_Status_Updater SHALL 이를 오류 없이 허용하고 결과 상태를 동일한 Terminal 상태로 유지한다.
-5. IF `submit_rvsecncl_order()` 경로에서 현재 상태가 `REJECTED` 또는 `FAILED`이고 요청된 상태가 `ACCEPTED`이면, THEN THE Order_Request_Status_Updater SHALL 해당 갱신을 차단하고 기존 `REJECTED` 또는 `FAILED` 상태를 그대로 유지한다.
-6. IF `submit_rvsecncl_order()` 경로에서 상태 갱신이 단조성 보호로 차단되면, THEN THE Order_Request_Status_Updater SHALL 이를 성공한 갱신으로 반환하지 않고 차단되었음을 나타내는 실패 지시를 호출자에게 전달한다.
-7. WHEN `submit_rvsecncl_order()` 취소·정정 성공 후처리가 실행되면, THE Order_Request_Status_Updater SHALL 취소 요청 행을 비-Terminal 상태에서 `CANCEL_ACCEPTED`로 전이하고 활성 주문을 비-Terminal 상태에서 `CANCELED`로 전이하는 기존 동작을 유지한다.
-8. THE MarketConnector SHALL 이 단조성 보호를 `submit_rvsecncl_order()` 경로의 로컬 상태 보호로만 정의하고, 대상 파일(`connector_order_common.py`) 밖의 전체 주문 동기화가 단조성을 보장한다고 주장하지 않는다.
+1. WHERE a quantity is a positive integer of at least 1, THE MarketConnector SHALL allow it as Normalized_Quantity without changing its value.
+2. IF a quantity is 0, THEN THE MarketConnector SHALL reject the request without calling the Broker and return a quantity-validation error to the caller.
+3. IF a quantity is negative, THEN THE MarketConnector SHALL reject the request without calling the Broker and return a quantity-validation error.
+4. IF a quantity is a non-integer fractional value, THEN THE MarketConnector SHALL NOT truncate or round it, SHALL NOT call the Broker, and SHALL return a quantity-validation error.
+5. IF a quantity is a bool value, THEN THE MarketConnector SHALL reject the request without calling the Broker and return a quantity-validation error.
+6. IF a quantity cannot be interpreted as numeric, THEN THE MarketConnector SHALL reject the request without calling the Broker and return a quantity-validation error.
+7. WHERE a quantity is a Decimal or string exactly equal to an integer, THE MarketConnector SHALL convert it to an integer of at least 1 and allow it without changing the value.
+8. THE MarketConnector SHALL pass Normalized_Quantity unchanged to the Broker call and SHALL NOT truncate, recalculate, or reduce it.
+9. THE MarketConnector SHALL apply the quantity normalization and validation semantics of criteria 1-8 consistently in `connector_strategy_order_execute.py` and `connector_order_common.py`.
+10. WHERE `STEP12_FATAL_MAX_ORDER_QTY` is unset or is 0, THE MarketConnector SHALL disable the Fatal_Max_Order_Qty check.
+11. IF `STEP12_FATAL_MAX_ORDER_QTY` is positive and a BUY/SELL quantity exceeds it, THEN THE MarketConnector SHALL NOT clamp the quantity, SHALL NOT call the Broker, and SHALL return a Fatal_Max exceeded error.
+12. IF `STEP12_FATAL_MAX_ORDER_QTY` is neither unset nor 0 and cannot be interpreted as a positive integer, including negative, fractional, or non-numeric values, THEN THE MarketConnector SHALL treat it as an explicit configuration error and SHALL NOT silently ignore it or disable the check.
+13. THE MarketConnector SHALL perform the quantity validation in criteria 1-8 before the Fatal_Max_Order_Qty check.
+14. IF quantity validation under criteria 2-6 fails, THEN THE MarketConnector SHALL NOT perform the Fatal_Max_Order_Qty check and SHALL always return the quantity-validation error first.
 
-### Requirement 6: 검증 안전 경계
+### Requirement 4: Full/Partial Cancellation and Modification Payload Contract
 
-**User Story:** 운영자로서, 이 기능의 검증이 외부 API나 운영 DB 없이 수행되기를 원한다. 그래야 검증 중 실제 주문이나 데이터 변경이 발생하지 않는다.
+**User Story:** As a developer, I want CANCEL and MODIFY quantity branching separated into a verifiable pure function, so Broker payload contract violations are blocked before a Broker call.
 
 #### Acceptance Criteria
 
-1. WHILE 검증을 수행하는 동안, THE MarketConnector SHALL 브로커 BUY, SELL, 취소, 정정 호출 횟수를 각각 정확히 0으로 유지한다.
-2. IF 검증 중 브로커 BUY, SELL, 취소, 정정 호출 횟수가 1회 이상 발생하면, THEN THE MarketConnector SHALL 해당 검증을 실패로 판정하고 위반한 호출 종류를 나타내는 오류를 보고하며 실제 주문 상태를 변경하지 않는다.
-3. WHILE 검증을 수행하는 동안, THE MarketConnector SHALL `requests.post`, token 함수, DB 함수를 mock으로 대체하여 외부 KIS API 호출, 실제 주문/취소, 운영 DB 실행 횟수를 각각 0으로 유지한다.
-4. WHEN 검증이 시작되면, THE MarketConnector SHALL `requests.post`, token 함수, DB 함수가 모두 mock으로 대체되었는지 사전에(proactively) 확인하고, 하나라도 mock으로 대체되지 않았으면 해당 함수가 실제로 호출되기 전에 검증을 즉시 실패로 판정하며 mock 미적용 대상을 나타내는 오류를 보고한다.
-5. WHEN 검증이 실행되면, THE MarketConnector SHALL Python Compile 오류 0건, 기존 Unit Test 실패 0건, 신규 Contract Test 실패 0건, Ruff 위반 0건을 모두 만족하는 경우에만 검증을 성공으로 판정한다.
-6. IF Python Compile 오류, 기존 Unit Test 실패, 신규 Contract Test 실패, Ruff 위반 중 1건 이상이 발생하면, THEN THE MarketConnector SHALL 해당 검증을 실패로 판정하고 실패한 검증 단계를 나타내는 오류를 보고한다.
+1. THE MarketConnector SHALL separate CANCEL/MODIFY quantity branching into the pure Cancel_Modify_Quantity_Resolver function. This function SHALL NOT perform side effects such as Broker calls or DB writes.
+2. WHEN action is CANCEL and quantity is None, THE Cancel_Modify_Quantity_Resolver SHALL build a full-cancellation payload with `ORD_QTY="0"` and `QTY_ALL_ORD_YN="Y"`.
+3. WHEN action is CANCEL and quantity is an integer of at least 1 and no greater than the Active_Order's `order_qty`, THE Cancel_Modify_Quantity_Resolver SHALL build a partial-cancellation payload with that integer as `ORD_QTY` and `QTY_ALL_ORD_YN="N"`.
+4. IF action is CANCEL and the specified quantity is 0, negative, or fractional, THEN THE Cancel_Modify_Quantity_Resolver SHALL raise an error, SHALL NOT build a payload, and SHALL NOT proceed to the Broker call.
+5. IF action is CANCEL and the specified partial-cancellation quantity exceeds the Active_Order's `order_qty`, THEN THE Cancel_Modify_Quantity_Resolver SHALL raise an error and SHALL NOT build a payload.
+6. WHEN action is MODIFY and a positive integer quantity of at least 1 is specified, THE Cancel_Modify_Quantity_Resolver SHALL build a modification payload with that quantity and `QTY_ALL_ORD_YN="N"`.
+7. WHEN action is MODIFY and quantity is omitted, THE Cancel_Modify_Quantity_Resolver SHALL use the Active_Order's existing quantity and keep `QTY_ALL_ORD_YN="N"`.
+8. IF action is MODIFY and the modification quantity is not a positive integer, THEN THE Cancel_Modify_Quantity_Resolver SHALL raise an error and SHALL NOT build a payload.
+9. WHEN Cancel_Modify_Quantity_Resolver is called repeatedly with the same input, THE Cancel_Modify_Quantity_Resolver SHALL deterministically return the same payload or the same error.
+10. THE MarketConnector SHALL state in the `connector_cancel.py` docstring and CLI help that omitting quantity means full cancellation and specifying quantity means partial cancellation.
+11. THE MarketConnector SHALL state in `connector_cancel.py` that full cancellation was confirmed to work in the Paper environment with the current TR ID and cancellation code, and SHALL NOT extend this into a live-environment validation claim.
+
+### Requirement 5: Local Order-Request Status Monotonicity
+
+**User Story:** As an operator, I want local order-request status not to regress from a Terminal state, so filled or canceled orders cannot return to an invalid earlier state.
+
+#### Acceptance Criteria
+
+1. WHEN a target order-request status update is requested on the `submit_rvsecncl_order()` path and the current `request_status` is Terminal (`FILLED`, `CANCELED`, `REJECTED`, or `FAILED`), THE Order_Request_Status_Updater SHALL NOT update it when the requested status differs from the current Terminal status and SHALL preserve the existing `request_status` unchanged.
+2. IF the current status is `FILLED` on the `submit_rvsecncl_order()` path and the requested status is not `FILLED`, THEN THE Order_Request_Status_Updater SHALL block the update and preserve `FILLED`.
+3. IF the current status is `CANCELED` on the `submit_rvsecncl_order()` path and the requested status is not `CANCELED`, THEN THE Order_Request_Status_Updater SHALL block the update and preserve `CANCELED`.
+4. WHERE the same status value as the current Terminal status is applied again on the `submit_rvsecncl_order()` path, THE Order_Request_Status_Updater SHALL allow it without error and keep the resulting status equal to the same Terminal status.
+5. IF the current status is `REJECTED` or `FAILED` on the `submit_rvsecncl_order()` path and the requested status is `ACCEPTED`, THEN THE Order_Request_Status_Updater SHALL block the update and preserve `REJECTED` or `FAILED`.
+6. IF a status update is blocked by the monotonicity guard on the `submit_rvsecncl_order()` path, THEN THE Order_Request_Status_Updater SHALL NOT return it as a successful update and SHALL return a failure indication that represents the block.
+7. WHEN successful cancellation/modification post-processing runs after `submit_rvsecncl_order()`, THE Order_Request_Status_Updater SHALL preserve the existing behavior that transitions the cancellation-request row from non-Terminal to `CANCEL_ACCEPTED` and the active order from non-Terminal to `CANCELED`.
+8. THE MarketConnector SHALL define this monotonicity guard only as local state protection on the `submit_rvsecncl_order()` path and SHALL NOT claim that all order synchronization outside the target file (`connector_order_common.py`) guarantees monotonicity.
+
+### Requirement 6: Validation Safety Boundary
+
+**User Story:** As an operator, I want this feature to be validated without external APIs or the operating DB, so validation cannot submit actual orders or change data.
+
+#### Acceptance Criteria
+
+1. WHILE validation is running, THE MarketConnector SHALL keep the count of actual Broker BUY, SELL, cancellation, and modification calls exactly 0 for each call type.
+2. IF the count of an actual Broker BUY, SELL, cancellation, or modification call reaches 1 or more during validation, THEN THE MarketConnector SHALL fail validation, report the violating call type, and SHALL NOT change actual order state.
+3. WHILE validation is running, THE MarketConnector SHALL replace `requests.post`, token functions, and DB functions with mocks so the counts of external KIS API calls, actual order/cancellation calls, and operating DB executions each remain 0.
+4. WHEN validation starts, THE MarketConnector SHALL proactively confirm that `requests.post`, token functions, and DB functions have all been replaced by mocks. If any target is not mocked, validation SHALL fail immediately before that function is actually called and report the unmocked target.
+5. WHEN validation runs, THE MarketConnector SHALL consider validation successful only when there are 0 Python Compile errors, 0 existing Unit Test failures, 0 new Contract Test failures, and 0 Ruff violations.
+6. IF one or more Python Compile errors, existing Unit Test failures, new Contract Test failures, or Ruff violations occur, THEN THE MarketConnector SHALL fail validation and report the failed validation stage.
 
 ## Remaining Item
 
-`connector_order_check.py` 검토는 전체 상태 동기화 단조성 보장을 위해 여전히 필요하다. Requirement 5의 단조성은 `submit_rvsecncl_order()` 경로에 대한 로컬 보호로 한정한다.
+Review of `connector_order_check.py` is still required to guarantee full synchronization-state monotonicity. Requirement 5 monotonicity is limited to local protection on the `submit_rvsecncl_order()` path.
