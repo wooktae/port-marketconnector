@@ -1,8 +1,9 @@
-"""Property test: 유효 수량은 값 보존 정규화된다 (Property 1).
+"""Property test: valid quantities are value-preserving normalized (Property 1).
 
-이 테스트는 브로커 주문 제출 경계의 순수 함수 `normalize_order_qty`만 검증한다.
-broker API, token, DB 함수를 호출하지 않으며, import 시 실제 side effect가 발생하지
-않도록 config 환경변수를 import-only 더미 값으로 주입한 뒤 대상 모듈을 import한다.
+This test validates only the pure function `normalize_order_qty` at the broker
+order submission boundary. It does not call broker APIs, token, or DB functions,
+and to avoid real side effects on import, it injects import-only dummy values for
+the config environment variables before importing the target module.
 """
 
 from __future__ import annotations
@@ -17,10 +18,10 @@ from hypothesis import strategies as st
 
 
 def _install_import_only_environment() -> None:
-    """config.py가 import 시 요구하는 환경변수를 더미 값으로만 채운다.
+    """Fill only with dummy values the environment variables that config.py requires on import.
 
-    실제 KIS 키·계좌 값을 읽거나 기록하지 않고, broker/DB/token side effect도
-    유발하지 않는다. 이미 설정된 키는 덮어쓰지 않는다.
+    Does not read or record real KIS key/account values, and does not trigger
+    broker/DB/token side effects. Keys that are already set are not overwritten.
     """
     config_path = Path(__file__).resolve().parents[1] / "config.py"
     source = config_path.read_text(encoding="utf-8-sig")
@@ -92,29 +93,30 @@ _install_import_only_environment()
 import connector_order_common as common
 
 
-# Feature: connector-order-submission-guards, Property 1: 유효 수량은 값 보존 정규화된다
+# Feature: connector-order-submission-guards, Property 1: valid quantities are value-preserving normalized
 # Validates: Requirements 1.1, 3.1, 3.7, 3.8
 @settings(max_examples=200)
 @given(n=st.integers(min_value=1, max_value=10**12))
 def test_valid_quantity_is_value_preserving_normalized(n: int) -> None:
-    """1 이상의 정수 n에 대해 int, Decimal(n), str(n) 세 표현 모두
+    """For an integer n of 1 or greater, all three representations int, Decimal(n), str(n)
 
-    값 변경 없이 정확히 정수 n으로 정규화되어야 한다. 정규화 결과는 브로커 호출까지
-    그대로 전달되는 값이므로, 세 표현이 동일한 int n을 반환하는지 확인한다.
+    must normalize to exactly the integer n without changing the value. Since the
+    normalization result is the value passed through to the broker call, verify that
+    all three representations return the same int n.
     """
     from_int = common.normalize_order_qty(n)
     from_decimal = common.normalize_order_qty(Decimal(n))
     from_str = common.normalize_order_qty(str(n))
 
-    # 값 보존: 세 표현 모두 정확히 정수 n을 반환한다.
+    # Value preservation: all three representations return exactly the integer n.
     assert from_int == n
     assert from_decimal == n
     assert from_str == n
 
-    # 타입 보존: 반환 타입은 int이며 float/Decimal로 변형되지 않는다.
+    # Type preservation: the return type is int and is not converted to float/Decimal.
     assert type(from_int) is int
     assert type(from_decimal) is int
     assert type(from_str) is int
 
-    # 세 입력 표현은 동일한 정규화 결과를 낸다(표현 무관 결정성).
+    # The three input representations produce the same normalization result (representation-independent determinism).
     assert from_int == from_decimal == from_str

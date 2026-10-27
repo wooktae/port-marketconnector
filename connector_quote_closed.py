@@ -1,7 +1,7 @@
-"""KIS 기간 시세 조회와 EOD quote 저장 흐름.
+"""KIS period quote query and EOD quote save flow.
 
-기간별 일봉 API를 호출하고 옵션에 따라 connector_quote_eod 테이블에 upsert한다.
-`--no-save` 사용 시에도 외부 API 호출과 token 처리는 발생할 수 있다.
+Calls the per-period daily-candle API and, depending on the option, upserts into the connector_quote_eod table.
+Even when `--no-save` is used, external API calls and token handling can still occur.
 """
 
 import argparse
@@ -14,6 +14,7 @@ import requests
 from config import APP_KEY, APP_SECRET, BASE_URL
 from connector_db import insert_api_call_log, to_jsonb, upsert_connector_quote_eod
 from token_manager import check_and_refresh_token, get_access_token
+from connector_locale import t
 
 SOURCE_VERSION = "connector-quote-eod-1.0.0"
 API_NAME = "inquire-daily-itemchartprice"
@@ -46,12 +47,12 @@ def get_closed_prices(
     end_date: str = "",
     save_db: bool = True,
 ):
-    """기간 시세를 조회하고 요청 옵션에 따라 EOD quote를 DB에 저장한다."""
-    print(f"\n📆 기간별 시세 조회: {stock_code}, 기간: {period_div}")
+    """Queries period quotes and saves EOD quotes to the DB depending on the request option."""
+    print(t(f"\n📆 Period quote query: {stock_code}, period: {period_div}", f"\n📆 기간별 시세 조회: {stock_code}, 기간: {period_div}"))
 
     token = get_access_token()
     if not token:
-        print("❌ 토큰 없음")
+        print(t("❌ No token", "❌ 토큰 없음"))
         return None
 
     url = f"{BASE_URL}{ENDPOINT}"
@@ -77,19 +78,19 @@ def get_closed_prices(
         res = requests.get(url, headers=headers, params=params, timeout=20)
         latency_ms = int((time.time() - started) * 1000)
     except Exception as e:
-        print("❌ 요청 에러:", e)
+        print(t("❌ Request error:", "❌ 요청 에러:"), e)
         return None
 
     new_tok = check_and_refresh_token(res.text)
     if new_tok:
-        print("🔄 토큰 오류 -> 재발급 후 재요청")
+        print(t("🔄 Token error -> reissue then retry", "🔄 토큰 오류 -> 재발급 후 재요청"))
         headers["Authorization"] = f"Bearer {new_tok}"
         res = requests.get(url, headers=headers, params=params, timeout=20)
 
     try:
         data = res.json()
     except Exception as e:
-        print("❌ JSON 파싱 실패:", e)
+        print(t("❌ JSON parsing failed:", "❌ JSON 파싱 실패:"), e)
         return None
 
     insert_api_call_log(
@@ -110,7 +111,7 @@ def get_closed_prices(
 
     prices = data.get("output2")
     if isinstance(prices, list) and prices:
-        print(f"✅ 기간별 시세 조회 성공 (총 {len(prices)}건)")
+        print(t(f"✅ Period quote query succeeded (total {len(prices)} rows)", f"✅ 기간별 시세 조회 성공 (총 {len(prices)}건)"))
 
         if save_db:
             rows = []
@@ -137,11 +138,11 @@ def get_closed_prices(
                 )
 
             upsert_connector_quote_eod(rows)
-            print(f"✅ connector_quote_eod 저장 완료 ({len(rows)}건)")
+            print(t(f"✅ connector_quote_eod saved ({len(rows)} rows)", f"✅ connector_quote_eod 저장 완료 ({len(rows)}건)"))
 
         return prices
 
-    print("❌ 조회 실패:", data)
+    print(t("❌ Query failed:", "❌ 조회 실패:"), data)
     return None
 
 
@@ -169,6 +170,6 @@ if __name__ == "__main__":
     )
 
     if daily:
-        print(f"\n✅ 조회 완료: {args.code}, count={len(daily)}")
+        print(t(f"\n✅ Query complete: {args.code}, count={len(daily)}", f"\n✅ 조회 완료: {args.code}, count={len(daily)}"))
         for item in daily[:5]:
             print(item)

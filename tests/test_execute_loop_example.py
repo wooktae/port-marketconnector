@@ -1,22 +1,24 @@
-"""Example test: Claim 기반 run() 루프 배치 동작 (Task 8.2).
+"""Example test: Claim-based run() loop batch behavior (Task 8.2).
 
-이 예시는 `connector_strategy_order_execute.run()`의 `--execute` 루프와
-Dry_Run 경로를 mock 격리 상태에서 직접 실행해 다음을 검증한다.
+This example directly runs the `--execute` loop and the Dry_Run path of
+`connector_strategy_order_execute.run()` under mock isolation to verify the following.
 
-- 혼합 배치 전체 순회 (Requirement 2.6):
-  일부 주문이 수량 검증에 실패하고 일부 Claim이 0행(skip)이어도, 루프는
-  대상 주문을 모두 순회하며 단위 실패/skip을 기록한 뒤 계속 진행한다.
-- Dry_Run 미변경 (Requirement 2.12):
-  `--execute`가 없으면 Claim과 모든 `execution_status` DB 변경을 수행하지
-  않는다. claim/mark/broker 제출 `call_count == 0`을 확인한다.
-- Claim DB 오류 (Requirement 2.13):
-  Claim 조건부 UPDATE가 DB 오류로 실패하면 해당 주문은 브로커를 호출하지
-  않고 단위 실패(mark_failed)로 기록되며, 배치는 나머지 주문으로 계속된다.
+- Full traversal of a mixed batch (Requirement 2.6):
+  Even when some orders fail quantity validation and some Claims return 0 rows (skip),
+  the loop traverses all target orders, records the unit failure/skip, and then continues.
+- Dry_Run makes no changes (Requirement 2.12):
+  Without `--execute`, it performs no Claim and no `execution_status` DB changes.
+  It verifies that claim/mark/broker submission `call_count == 0`.
+- Claim DB error (Requirement 2.13):
+  If the Claim conditional UPDATE fails with a DB error, that order does not call the
+  broker and is recorded as a unit failure (mark_failed), and the batch continues with
+  the remaining orders.
 
-모든 검증은 broker/token/DB 함수를 mock으로 격리한 상태에서 수행하며,
-실제 KIS API·token·운영 DB를 호출하지 않는다 (Requirement 6). run() 루프가
-호출하는 module-level 함수(fetch·claim·mark·broker 제출)를 mock으로 대체하고,
-실제 `get_conn`과 실제 broker 제출 진입점은 호출되면 즉시 실패하도록 가드한다.
+All checks are performed with the broker/token/DB functions isolated by mocks, and do
+not call the real KIS API, token, or operating DB (Requirement 6). The module-level
+functions the run() loop calls (fetch/claim/mark/broker submission) are replaced with
+mocks, and the real `get_conn` and the real broker submission entry point are guarded so
+that they fail immediately if called.
 """
 
 from __future__ import annotations
@@ -28,10 +30,10 @@ from typing import Any
 
 
 def _install_import_only_environment() -> None:
-    """config.py가 import 시 요구하는 환경변수를 더미 값으로만 채운다.
+    """Fill only with dummy values the environment variables that config.py requires on import.
 
-    실제 KIS 키·계좌 값을 읽거나 기록하지 않고, broker/DB/token side effect도
-    유발하지 않는다. 이미 설정된 키는 덮어쓰지 않는다.
+    Does not read or record real KIS key/account values, and does not trigger
+    broker/DB/token side effects. Keys that are already set are not overwritten.
     """
     config_path = Path(__file__).resolve().parents[1] / "config.py"
     source = config_path.read_text(encoding="utf-8-sig")
@@ -107,10 +109,11 @@ import connector_strategy_order_execute as execute
 # Test doubles / spies
 # ---------------------------------------------------------------------------
 class _GetConnGuard:
-    """실제 DB 접근을 즉시 실패시키는 가드.
+    """A guard that immediately fails on real DB access.
 
-    run() 경로의 모든 DB 함수를 mock으로 대체했으므로, 실제 get_conn이
-    호출되면 mock 미적용을 의미하며 검증을 즉시 실패시킨다 (Requirement 6).
+    Since all DB functions on the run() path are replaced with mocks, if the real
+    get_conn is called it means the mock was not applied, so the check fails immediately
+    (Requirement 6).
     """
 
     def __call__(self, *args: Any, **kwargs: Any):
@@ -118,11 +121,11 @@ class _GetConnGuard:
 
 
 def _guard_real_broker_submit(*args: Any, **kwargs: Any):
-    """실제 broker 제출 진입점 가드.
+    """A guard for the real broker submission entry point.
 
-    run() 루프 테스트는 broker 제출을 rate-limit-retry wrapper 수준에서
-    mock하므로, 실제 _submit_order가 호출되면 broker/token side effect 위험을
-    의미하며 검증을 즉시 실패시킨다 (Requirement 6).
+    Since the run() loop tests mock broker submission at the rate-limit-retry wrapper
+    level, if the real _submit_order is called it means a risk of broker/token side
+    effects, so the check fails immediately (Requirement 6).
     """
     raise AssertionError("real _submit_order must not be called in run() loop tests")
 
@@ -160,7 +163,7 @@ def _successful_broker_result(order_request_id: int) -> dict[str, Any]:
 
 
 class _RunHarness:
-    """run() 루프가 호출하는 module-level 함수를 mock으로 격리한다."""
+    """Isolate with mocks the module-level functions the run() loop calls."""
 
     def __init__(self, monkeypatch, orders: list[dict[str, Any]]) -> None:
         self.orders = orders
@@ -177,18 +180,18 @@ class _RunHarness:
         self.mark_failed_behavior: dict[int, str] = {}
         self._request_id_seq = 9000
 
-        # 실제 side-effect 진입점 가드.
+        # Guard the real side-effect entry points.
         monkeypatch.setattr(execute, "get_conn", _GetConnGuard())
         monkeypatch.setattr(execute, "_submit_order", _guard_real_broker_submit)
 
-        # --execute 환경 요구와 retry recovery는 DB에 접근하므로 격리한다.
+        # The --execute environment requirement and retry recovery access the DB, so isolate them.
         monkeypatch.setattr(execute, "_require_execute_environment", lambda: None)
         monkeypatch.setattr(
             execute,
             "normalize_retryable_rejected_orders",
             lambda **kwargs: [],
         )
-        # Fatal_Max는 이 테스트 범위 밖이므로 비활성(None)으로 고정한다.
+        # Fatal_Max is outside the scope of this test, so fix it as disabled (None).
         monkeypatch.setattr(execute, "resolve_fatal_max_order_qty", lambda: None)
 
         monkeypatch.setattr(
@@ -279,13 +282,13 @@ def _dry_run_args():
 
 
 # ---------------------------------------------------------------------------
-# Req 2.6: 혼합 배치 전체 순회
+# Req 2.6: full traversal of a mixed batch
 # ---------------------------------------------------------------------------
 def test_mixed_batch_continues_through_failure_and_skip(monkeypatch) -> None:
-    # id=1 정상 제출, id=2 수량 검증 실패, id=3 Claim 0행 skip, id=4 정상 제출.
+    # id=1 normal submission, id=2 quantity validation failure, id=3 Claim 0-row skip, id=4 normal submission.
     orders = [
         _make_order(1, 3),
-        _make_order(2, 2.5),  # 소수부 -> QuantityValidationError (브로커 미호출)
+        _make_order(2, 2.5),  # fractional part -> QuantityValidationError (broker not called)
         _make_order(3, 5),
         _make_order(4, 7),
     ]
@@ -296,24 +299,24 @@ def test_mixed_batch_continues_through_failure_and_skip(monkeypatch) -> None:
 
     assert rc == 0
 
-    # 배치는 4개 주문을 모두 순회한다. id=2는 검증 실패로 Claim 이전에
-    # 중단되므로 Claim은 검증을 통과한 1·3·4에 대해서만 시도된다.
+    # The batch traverses all 4 orders. Since id=2 stops before Claim due to a validation
+    # failure, Claim is attempted only for 1, 3, and 4, which passed validation.
     assert harness.claim_calls == [1, 3, 4]
 
-    # 브로커 제출은 Claim이 행을 반환한 1·4에 대해서만 정확히 발생한다.
-    # 검증 실패(2)와 skip(3)은 브로커를 호출하지 않는다.
+    # Broker submission occurs exactly for 1 and 4, for which Claim returned a row.
+    # The validation failure (2) and the skip (3) do not call the broker.
     assert harness.submit_calls == [1, 4]
 
-    # 단위 실패는 수량 검증 실패 주문(2)에 대해서만 기록된다.
+    # A unit failure is recorded only for the quantity validation failure order (2).
     assert harness.failed_calls == [2]
 
-    # 정상 제출된 주문(1·4)만 SUBMITTED로 기록된다. skip(3)은 상태 변경 없음.
+    # Only the normally submitted orders (1, 4) are recorded as SUBMITTED. The skip (3) has no state change.
     assert harness.submitted_calls == [1, 4]
 
 
 # ---------------------------------------------------------------------------
-# Req 2.12: Dry_Run은 Claim과 execution_status DB 변경, 브로커 호출을
-#           수행하지 않는다.
+# Req 2.12: Dry_Run performs no Claim, no execution_status DB change, and no
+#           broker call.
 # ---------------------------------------------------------------------------
 def test_dry_run_performs_no_claim_mark_or_broker_call(monkeypatch) -> None:
     orders = [
@@ -326,7 +329,7 @@ def test_dry_run_performs_no_claim_mark_or_broker_call(monkeypatch) -> None:
 
     assert rc == 0
 
-    # Dry_Run은 순수 검증만 수행하고 Claim·mark·broker 제출을 하지 않는다.
+    # Dry_Run performs only pure validation and does not do Claim/mark/broker submission.
     assert len(harness.claim_calls) == 0
     assert len(harness.submit_calls) == 0
     assert len(harness.submitted_calls) == 0
@@ -335,10 +338,10 @@ def test_dry_run_performs_no_claim_mark_or_broker_call(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Req 2.13: Claim DB 오류 시 브로커 미호출·단위 실패, 배치 계속
+# Req 2.13: on Claim DB error, broker not called, unit failure, batch continues
 # ---------------------------------------------------------------------------
 def test_claim_db_error_skips_broker_and_continues_batch(monkeypatch) -> None:
-    # id=10 Claim DB 오류, id=11 정상 제출.
+    # id=10 Claim DB error, id=11 normal submission.
     orders = [
         _make_order(10, 3),
         _make_order(11, 4),
@@ -350,31 +353,32 @@ def test_claim_db_error_skips_broker_and_continues_batch(monkeypatch) -> None:
 
     assert rc == 0
 
-    # Claim은 두 주문 모두 시도된다(배치가 오류로 중단되지 않음).
+    # Claim is attempted for both orders (the batch is not aborted by the error).
     assert harness.claim_calls == [10, 11]
 
-    # Claim DB 오류 주문(10)은 브로커를 호출하지 않는다.
-    # 정상 주문(11)만 브로커를 정확히 1회 호출한다.
+    # The Claim DB error order (10) does not call the broker.
+    # Only the normal order (11) calls the broker exactly once.
     assert harness.submit_calls == [11]
 
-    # Claim DB 오류 주문(10)은 단위 실패로 기록된다.
+    # The Claim DB error order (10) is recorded as a unit failure.
     assert harness.failed_calls == [10]
 
-    # 배치는 계속되어 정상 주문(11)이 SUBMITTED로 기록된다.
+    # The batch continues and the normal order (11) is recorded as SUBMITTED.
     assert harness.submitted_calls == [11]
 
 
 # ---------------------------------------------------------------------------
-# 브로커 성공 후 SUBMITTED 상태 동기화가 갱신 행 없이(None) 실패하는 경우.
+# The case where SUBMITTED state synchronization fails with no updated row (None) after broker success.
 #
-# 브로커는 이미 성공 응답을 반환했으므로 이를 재제출 가능한 FAILED로
-# 덮어쓰지 않는다. SUBMITTED_STATE_SYNC_FAILED로 구분 기록하고, SELL 후속
-# 처리와 [SUBMITTED] 성공 로그를 수행하지 않은 채 다음 주문으로 계속한다.
+# Since the broker has already returned a success response, do not overwrite it with a
+# resubmittable FAILED. Record it distinctly as SUBMITTED_STATE_SYNC_FAILED and continue
+# to the next order without performing SELL follow-up processing or the [SUBMITTED]
+# success log.
 # ---------------------------------------------------------------------------
 def test_broker_success_then_mark_submitted_returns_none(monkeypatch, capsys) -> None:
-    # id=21 SELL: broker 성공, mark_submitted None. id=22 정상 제출로 배치 지속 확인.
+    # id=21 SELL: broker success, mark_submitted None. id=22 normal submission to confirm batch continuation.
     sell_order = _make_order(21, 3, action="SELL")
-    sell_order["source_position_state_id"] = 555  # None-return 가드로 미호출 검증
+    sell_order["source_position_state_id"] = 555  # verify not called via the None-return guard
     orders = [
         sell_order,
         _make_order(22, 4, action="SELL"),
@@ -387,33 +391,33 @@ def test_broker_success_then_mark_submitted_returns_none(monkeypatch, capsys) ->
 
     assert rc == 0
 
-    # broker mock 호출은 정확히 1회(id=21). id=22도 정상 제출된다.
+    # The broker mock is called exactly once (id=21). id=22 is also submitted normally.
     assert harness.submit_calls == [21, 22]
 
-    # SUBMITTED 반환이 None이면 SELL_ORDERED 후속 처리를 하지 않는다.
+    # If the SUBMITTED return is None, do not perform SELL_ORDERED follow-up processing.
     assert harness.sell_ordered_calls == []
 
-    # 재제출 가능한 FAILED로 덮어쓰지 않는다.
+    # Do not overwrite with a resubmittable FAILED.
     assert harness.failed_calls == []
 
-    # SUBMITTED_STATE_SYNC_FAILED 구분 기록이 남는다.
+    # A distinct SUBMITTED_STATE_SYNC_FAILED record remains.
     assert "SUBMITTED_STATE_SYNC_FAILED" in out
     assert "execution_order_id=21" in out
 
-    # id=21의 [SUBMITTED] 성공 로그는 출력되지 않고, id=22만 성공 처리된다.
+    # The [SUBMITTED] success log for id=21 is not printed, and only id=22 is processed as a success.
     assert "[SUBMITTED] execution_order_id=21" not in out
     assert harness.submitted_calls == [21, 22]
     assert 22 in harness.sell_ordered_calls or "[SUBMITTED] execution_order_id=22" in out
 
 
 # ---------------------------------------------------------------------------
-# 브로커 성공 후 SUBMITTED 상태 반영 중 DB 예외가 발생하는 경우.
+# The case where a DB exception occurs during SUBMITTED state reflection after broker success.
 #
-# 브로커 응답이 이미 성공일 수 있으므로 mark_failed를 호출하지 않고,
-# SUBMITTED_STATE_SYNC_FAILED로 구분 기록한 뒤 다음 주문으로 계속한다.
+# Since the broker response may already be a success, do not call mark_failed; record it
+# distinctly as SUBMITTED_STATE_SYNC_FAILED and continue to the next order.
 # ---------------------------------------------------------------------------
 def test_broker_success_then_mark_submitted_raises(monkeypatch, capsys) -> None:
-    # id=31 SELL: broker 성공, mark_submitted 예외. id=32 정상 제출로 배치 지속 확인.
+    # id=31 SELL: broker success, mark_submitted exception. id=32 normal submission to confirm batch continuation.
     sell_order = _make_order(31, 3, action="SELL")
     sell_order["source_position_state_id"] = 777
     orders = [
@@ -428,33 +432,33 @@ def test_broker_success_then_mark_submitted_raises(monkeypatch, capsys) -> None:
 
     assert rc == 0
 
-    # broker mock 호출은 id=31에 대해 정확히 1회, id=32도 정상 제출된다.
+    # The broker mock is called exactly once for id=31, and id=32 is also submitted normally.
     assert harness.submit_calls == [31, 32]
 
-    # 브로커 성공 후 상태 반영 예외는 FAILED로 덮어쓰지 않는다.
+    # A state reflection exception after broker success does not overwrite with FAILED.
     assert harness.failed_calls == []
 
-    # SELL_ORDERED 후속 처리도 하지 않는다.
+    # SELL_ORDERED follow-up processing is also not performed.
     assert 31 not in harness.sell_ordered_calls
 
-    # SUBMITTED_STATE_SYNC_FAILED 구분 기록이 남는다.
+    # A distinct SUBMITTED_STATE_SYNC_FAILED record remains.
     assert "SUBMITTED_STATE_SYNC_FAILED" in out
     assert "execution_order_id=31" in out
 
-    # 배치는 계속되어 id=32가 정상 제출된다.
+    # The batch continues and id=32 is submitted normally.
     assert harness.submitted_calls == [31, 32]
 
 
 # ---------------------------------------------------------------------------
-# Claim 오류와 실패 상태 기록(mark_failed) 오류가 동시에 발생하는 이중 오류.
+# A double error where a Claim error and a failure-status write (mark_failed) error occur together.
 #
-# 실패 상태 기록까지 실패해도 run() 바깥으로 예외가 전파되지 않고,
-# CLAIM_FAILED_STATUS_WRITE_FAILED로 구분 기록한 뒤 배치를 계속한다.
+# Even if the failure-status write also fails, the exception does not propagate outside
+# run(); it is recorded distinctly as CLAIM_FAILED_STATUS_WRITE_FAILED and the batch continues.
 # ---------------------------------------------------------------------------
 def test_claim_error_and_mark_failed_error_do_not_abort_batch(
     monkeypatch, capsys
 ) -> None:
-    # id=41 Claim 예외 + mark_failed 예외, id=42 정상 제출.
+    # id=41 Claim exception + mark_failed exception, id=42 normal submission.
     orders = [
         _make_order(41, 3),
         _make_order(42, 4),
@@ -463,19 +467,19 @@ def test_claim_error_and_mark_failed_error_do_not_abort_batch(
     harness.claim_behavior[41] = "db_error"
     harness.mark_failed_behavior[41] = "db_error"
 
-    # run()이 예외로 종료되지 않아야 한다.
+    # run() must not terminate via an exception.
     rc = execute.run(_execute_args())
     out = capsys.readouterr().out
 
     assert rc == 0
 
-    # 첫 주문(41)은 Claim 실패로 브로커를 호출하지 않는다.
-    # 둘째 주문(42)만 브로커를 정확히 1회 호출한다.
+    # The first order (41) does not call the broker due to the Claim failure.
+    # Only the second order (42) calls the broker exactly once.
     assert harness.submit_calls == [42]
 
-    # 이중 오류 구분 기록이 남는다.
+    # A distinct double-error record remains.
     assert "CLAIM_FAILED_STATUS_WRITE_FAILED" in out
     assert "execution_order_id=41" in out
 
-    # 배치는 계속되어 둘째 주문(42)이 SUBMITTED로 기록된다.
+    # The batch continues and the second order (42) is recorded as SUBMITTED.
     assert harness.submitted_calls == [42]

@@ -1,19 +1,19 @@
-"""Example test: Claim·mark 계약 (Task 7.4).
+"""Example test: the Claim/mark contract (Task 7.4).
 
-이 예시는 브로커 주문 제출 경계의 Claim 계약을 검증한다.
+This example validates the Claim contract at the broker order submission boundary.
 
-- `SUBMITTING_STATUS` 값과 Claim 조건부 UPDATE 참조 확인 (Requirement 2.1)
-- Claim 선수행과 브로커 정확히 1회 호출 확인 (Requirements 2.2, 2.4)
+- Verify the `SUBMITTING_STATUS` value and the Claim conditional UPDATE references (Requirement 2.1)
+- Verify Claim-first execution and exactly one broker call (Requirements 2.2, 2.4)
 
-Claim 기반 `run()` 처리 루프 통합은 Task 8에서 수행하므로, 이 예시는
-`run()` 전체 배치 동작이 아니라 Claim + 브로커-1회 호출 + 순서 계약에
-집중한다. 혼합 배치 지속·Dry_Run·Claim DB 오류 등 `run()` 루프 동작은
-Task 8.2에서 다룬다.
+Integration of the Claim-based `run()` processing loop is performed in Task 8, so this
+example focuses on Claim + one broker call + ordering contract rather than the full
+`run()` batch behavior. The `run()` loop behavior, such as mixed-batch continuation,
+Dry_Run, and Claim DB errors, is covered in Task 8.2.
 
-모든 검증은 broker/token/DB 함수를 mock 또는 in-memory fake로 격리한
-상태에서 수행하며, 실제 KIS API·token·운영 DB를 호출하지 않는다
-(Requirement 6). 실제 `get_conn`은 fake로 대체하고, 대체되지 않은 채
-실제 DB에 접근하려 하면 즉시 실패시킨다.
+All checks are performed with the broker/token/DB functions isolated by mocks or
+in-memory fakes, and do not call the real KIS API, token, or operating DB
+(Requirement 6). The real `get_conn` is replaced with a fake, and any attempt to access
+the real DB without replacement fails immediately.
 """
 
 from __future__ import annotations
@@ -26,10 +26,10 @@ from typing import Any, Self
 
 
 def _install_import_only_environment() -> None:
-    """config.py가 import 시 요구하는 환경변수를 더미 값으로만 채운다.
+    """Fill only with dummy values the environment variables that config.py requires on import.
 
-    실제 KIS 키·계좌 값을 읽거나 기록하지 않고, broker/DB/token side effect도
-    유발하지 않는다. 이미 설정된 키는 덮어쓰지 않는다.
+    Does not read or record real KIS key/account values, and does not trigger
+    broker/DB/token side effects. Keys that are already set are not overwritten.
     """
     config_path = Path(__file__).resolve().parents[1] / "config.py"
     source = config_path.read_text(encoding="utf-8-sig")
@@ -105,11 +105,11 @@ import connector_strategy_order_execute as execute
 # In-memory fake DB
 # ---------------------------------------------------------------------------
 class _FakeCursor:
-    """psycopg 커서를 흉내내는 최소 fake.
+    """A minimal fake that mimics a psycopg cursor.
 
-    - information_schema.columns 조회: strategy_execution_order 컬럼 목록 반환.
-    - 조건부 UPDATE(claim): 사전 설정한 claim 결과 행을 RETURNING으로 반환.
-    실제 DB나 네트워크에 접근하지 않는다.
+    - information_schema.columns query: returns the strategy_execution_order column list.
+    - conditional UPDATE (claim): returns the preconfigured claim result row via RETURNING.
+    Does not access a real DB or the network.
     """
 
     def __init__(self, shared: dict[str, Any]) -> None:
@@ -131,7 +131,7 @@ class _FakeCursor:
             return
 
         if "UPDATE" in sql and "execution_status" in sql:
-            # Claim 조건부 UPDATE 실행 기록과 파라미터 캡처.
+            # Record the Claim conditional UPDATE execution and capture the parameters.
             self._shared["call_log"].append("claim")
             self._shared["claim_params"] = params
             self._one = self._shared["claim_result"]
@@ -176,7 +176,7 @@ def _all_execution_order_columns() -> list[str]:
 
 
 def _claimed_row(execution_order_id: int = 501) -> dict[str, Any]:
-    """Claim 성공 후 RETURNING으로 돌아오는 행(모든 컬럼 포함)."""
+    """The row returned via RETURNING after a successful Claim (includes all columns)."""
     row = {col: None for col in _all_execution_order_columns()}
     row.update(
         {
@@ -215,21 +215,21 @@ def _install_shared(
 
 
 # ---------------------------------------------------------------------------
-# Req 2.1: SUBMITTING_STATUS 값과 Claim 쿼리 참조
+# Req 2.1: SUBMITTING_STATUS value and Claim query references
 # ---------------------------------------------------------------------------
 def test_submitting_status_constant_and_query_references() -> None:
-    # SUBMITTING_STATUS 상수 값 확인.
+    # Verify the SUBMITTING_STATUS constant value.
     assert execute.SUBMITTING_STATUS == "SUBMITTING"
     assert execute.REQUESTED_STATUS == "REQUESTED"
 
-    # Claim 조건부 UPDATE가 상수와 Claim 조건을 참조하는지 정적 확인.
+    # Statically verify that the Claim conditional UPDATE references the constants and the Claim condition.
     claim_source = inspect.getsource(execute.claim_strategy_execution_order)
     assert "SUBMITTING_STATUS" in claim_source
     assert "REQUESTED_STATUS" in claim_source
     assert "execution_status = %s" in claim_source
     assert "connector_order_request_id IS NULL" in claim_source
 
-    # 후속 전이 가드도 SUBMITTING/Terminal 상태 계약을 참조하는지 확인.
+    # Verify that the subsequent transition guard also references the SUBMITTING/Terminal state contract.
     submitted_source = inspect.getsource(
         execute.mark_strategy_execution_order_submitted
     )
@@ -243,8 +243,8 @@ def test_submitting_status_constant_and_query_references() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Req 2.1 / 2.3: Claim은 REQUESTED→SUBMITTING 전이 파라미터로 실행되고
-#               갱신된 행을 반환한다.
+# Req 2.1 / 2.3: Claim executes with the REQUESTED->SUBMITTING transition parameters
+#               and returns the updated row.
 # ---------------------------------------------------------------------------
 def test_claim_transitions_with_submitting_status_and_returns_row(
     monkeypatch,
@@ -254,13 +254,13 @@ def test_claim_transitions_with_submitting_status_and_returns_row(
 
     result = execute.claim_strategy_execution_order(501)
 
-    # 정확히 한 행이 SUBMITTING으로 갱신되어 그 행이 반환된다.
+    # Exactly one row is updated to SUBMITTING and that row is returned.
     assert result is not None
     assert result["id"] == 501
     assert result["execution_status"] == execute.SUBMITTING_STATUS
 
-    # 조건부 UPDATE는 SUBMITTING_STATUS로 전이하고, 대상 id와
-    # REQUESTED_STATUS를 Claim 조건 파라미터로 전달한다.
+    # The conditional UPDATE transitions to SUBMITTING_STATUS and passes the target id and
+    # REQUESTED_STATUS as the Claim condition parameters.
     params = shared["claim_params"]
     assert params == (
         execute.SUBMITTING_STATUS,
@@ -271,7 +271,7 @@ def test_claim_transitions_with_submitting_status_and_returns_row(
 
 
 # ---------------------------------------------------------------------------
-# Req 2.2 / 2.4: Claim 선수행 후 브로커를 정확히 1회 호출한다.
+# Req 2.2 / 2.4: after Claim-first execution, call the broker exactly once.
 # ---------------------------------------------------------------------------
 def test_claim_precedes_broker_submission_and_broker_called_once(
     monkeypatch,
@@ -292,25 +292,25 @@ def test_claim_precedes_broker_submission_and_broker_called_once(
 
     monkeypatch.setattr(execute, "_submit_order", fake_submit)
 
-    # 제출 경계 계약을 모사한다: 브로커 호출 이전에 Claim을 먼저 수행하고,
-    # Claim이 한 행을 반환한 경우에만 브로커를 호출한다.
+    # Simulate the submission boundary contract: perform Claim before the broker call,
+    # and call the broker only if Claim returned a row.
     target_id = 777
     claimed_row = execute.claim_strategy_execution_order(target_id)
     assert claimed_row is not None
     if claimed_row is not None:
         execute._submit_order(claimed_row)
 
-    # Req 2.2: Claim이 브로커 제출보다 먼저 수행된다.
+    # Req 2.2: Claim is performed before the broker submission.
     assert shared["call_log"] == ["claim", "submit"]
 
-    # Req 2.4: Claim이 정확히 한 행을 SUBMITTING으로 갱신하면 브로커를
-    # 정확히 1회 호출한다.
+    # Req 2.4: when Claim updates exactly one row to SUBMITTING, the broker is
+    # called exactly once.
     assert len(submit_calls) == 1
     assert submit_calls[0]["id"] == target_id
 
 
 # ---------------------------------------------------------------------------
-# Req 2.4 (once-only 의미 보강): Claim 0행이면 브로커를 호출하지 않는다.
+# Req 2.4 (reinforcing the once-only semantics): if Claim returns 0 rows, do not call the broker.
 # ---------------------------------------------------------------------------
 def test_zero_row_claim_skips_broker_submission(monkeypatch) -> None:
     shared = _install_shared(monkeypatch, claim_result=None)
@@ -326,9 +326,9 @@ def test_zero_row_claim_skips_broker_submission(monkeypatch) -> None:
 
     claimed_row = execute.claim_strategy_execution_order(999)
     assert claimed_row is None
-    if claimed_row is not None:  # pragma: no cover - 방어적 분기
+    if claimed_row is not None:  # pragma: no cover - defensive branch
         execute._submit_order(claimed_row)
 
-    # Claim이 0행이면 브로커 제출은 발생하지 않는다.
+    # If Claim returns 0 rows, no broker submission occurs.
     assert shared["call_log"] == ["claim"]
     assert len(submit_calls) == 0

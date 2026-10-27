@@ -1,13 +1,14 @@
-"""KIS 국내 주식 현금 매수 주문 wrapper.
+"""KIS domestic stock cash buy order wrapper.
 
-공통 주문 제출 모듈에 매수 TR_ID와 주문 입력값을 전달한다.
-CLI 실행 시 브로커 주문 제출과 DB 주문 요청 저장이 발생할 수 있다.
+Passes the buy TR_ID and order input values to the common order submission module.
+CLI execution can trigger broker order submission and DB order-request saving.
 """
 
 import argparse
 from typing import Optional
 
 from connector_order_common import submit_cash_order
+from connector_locale import t
 
 SOURCE_VERSION = "connector-order-buy-2.0.0"
 API_NAME = "order-cash-buy"
@@ -29,7 +30,7 @@ def buy_stock(
     signal_score: Optional[float] = None,
     signal_position_size: Optional[float] = None,
 ):
-    """매수 주문 요청을 공통 주문 제출 흐름으로 위임한다."""
+    """Delegates the buy order request to the common order submission flow."""
     return submit_cash_order(
         request_type="BUY",
         api_name=API_NAME,
@@ -63,7 +64,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.yes:
-        print("❌ 실제 매수 주문 차단: 실행하려면 --yes를 붙여줘")
+        print(t("❌ Real buy order blocked: add --yes to execute", "❌ 실제 매수 주문 차단: 실행하려면 --yes를 붙여줘"))
         raise SystemExit(1)
 
     result = buy_stock(

@@ -1,54 +1,53 @@
-"""검증 안전 경계 conftest (Requirement 6).
+"""Validation safety-boundary conftest (Requirement 6).
 
-이 conftest는 모든 테스트에서 실제 외부 side-effect 진입점을 가드해,
-검증 중 실제 KIS API 호출, 실제 주문/취소, 운영 DB 접근, token 발급이
-발생하지 않도록 보장한다.
+This conftest guards the real external side-effect entrypoints in every test so that
+no real KIS API calls, real orders/cancellations, operating DB access or token issuance
+occur during validation.
 
-가드하는 실제 진입점(모든 시나리오에서 실제 호출 `call_count == 0`):
+Guarded real entrypoints (real call `call_count == 0` in every scenario):
 
 - `requests.post` / `requests.get`
-  `connector_order_common.py`와 `token_manager.py`는 module-level
-  `import requests` 후 호출 시점에 `requests.post(...)` 형태로 속성을 조회한다.
-  `requests` 모듈의 `post`/`get`을 가드로 대체하면, 어떤 호출 지점이든
-  실제 네트워크 호출 이전에 즉시 실패한다.
+  `connector_order_common.py` and `token_manager.py` do a module-level
+  `import requests` and then look up the attribute as `requests.post(...)` at call time.
+  Replacing the `requests` module's `post`/`get` with a guard makes any call site
+  fail immediately before a real network call.
 
 - `psycopg.connect`
-  운영 DB 연결의 실제 저수준 진입점이다. `connector_db.get_conn()`은
-  `psycopg.connect(**get_db_config())`를 호출한다. `psycopg.connect`를
-  가드로 대체하면, 실제 DB 연결 이전에 즉시 실패한다.
+  The real low-level entrypoint for operating DB connections. `connector_db.get_conn()`
+  calls `psycopg.connect(**get_db_config())`. Replacing `psycopg.connect` with a guard
+  makes it fail immediately before a real DB connection.
 
-- token 함수(`get_access_token`, `check_and_refresh_token`,
+- token functions (`get_access_token`, `check_and_refresh_token`,
   `issue_new_token`, `force_issue_new_token`)
-  `token_manager` 원본과, 이를 `from token_manager import ...`로 가져다 쓰는
-  `connector_order_common` 바인딩을 함께 가드한다. 실제 token 발급과
-  token 파일 접근이 발생하기 전에 즉시 실패한다.
+  Guards both the `token_manager` originals and the `connector_order_common` binding that
+  imports them via `from token_manager import ...`. It fails immediately before real token
+  issuance and token file access occur.
 
-per-test monkeypatch 우선(precedence):
+per-test monkeypatch precedence:
 
-- 이 autouse 가드는 테스트와 동일한 function-scoped `monkeypatch`를 사용한다.
-  fixture setup은 테스트 본문보다 먼저 실행되므로, 테스트가 자체적으로
-  `monkeypatch.setattr(common.requests, "post", ...)`처럼 상위 모듈 속성을
-  대체하면 그 값이 가드를 덮어써(intercept) 테스트의 fake가 사용된다.
-- DB는 저수준 `psycopg.connect`에서 가드하므로, 테스트가 상위 수준
-  `execute.get_conn`/`common.get_conn`을 자체 fake로 대체하면 실제
-  `get_conn`이 실행되지 않아 `psycopg.connect` 가드에 도달하지 않는다.
-  아무것도 대체하지 않은 채 실제 호출이 경계에 도달한 경우에만 가드가
-  발동한다.
+- This autouse guard uses the same function-scoped `monkeypatch` as the test.
+  Since fixture setup runs before the test body, if a test itself replaces an upper-module
+  attribute like `monkeypatch.setattr(common.requests, "post", ...)`, that value overwrites
+  (intercepts) the guard and the test's fake is used.
+- Since the DB is guarded at the low-level `psycopg.connect`, if a test replaces the upper-level
+  `execute.get_conn`/`common.get_conn` with its own fake, the real `get_conn` does not run and
+  the `psycopg.connect` guard is not reached. The guard fires only when a real call reaches the
+  boundary with nothing replaced.
 
-proactive mock 사전 확인(Requirement 6.4):
+proactive mock pre-check (Requirement 6.4):
 
-- 검증 시작(=fixture setup, 실제 호출 이전) 시점에 위 실제 진입점들이
-  가드로 대체된다. 어떤 대상이 mock으로 대체되지 않은 채 실제 호출이
-  시도되면, 실제 side effect가 발생하기 전에 가드가 즉시 `AssertionError`로
-  실패시키며 어떤 진입점(requests.post / requests.get / DB / token)이
-  가드에 도달했는지 오류 메시지로 보고한다.
+- At validation start (= fixture setup, before any real call), the real entrypoints above are
+  replaced with guards. If any target is not replaced with a mock and a real call is attempted,
+  the guard fails immediately with an `AssertionError` before a real side effect occurs, and
+  reports in the error message which entrypoint (requests.post / requests.get / DB / token)
+  reached the guard.
 
-mock broker 함수 가드 아님(Requirement 6 범위 구분):
+not a mock-broker-function guard (Requirement 6 scope distinction):
 
-- 이 conftest는 실제 외부 side-effect 진입점만 0으로 가드한다.
-- mock broker/`_request_api`/`_submit_order` 등의 호출 횟수는 강제로 0으로
-  만들지 않으며, 시나리오별 기대값(차단·skip은 0회, 정상 Claim 성공은
-  정확히 1회)은 각 테스트가 자체적으로 assert한다.
+- This conftest guards only the real external side-effect entrypoints to 0.
+- It does not force the call counts of the mock broker/`_request_api`/`_submit_order` etc. to 0;
+  each test asserts its own per-scenario expected values (0 for block/skip, exactly 1 for a
+  successful normal Claim).
 """
 
 from __future__ import annotations
@@ -61,20 +60,19 @@ from typing import Any
 
 import pytest
 
-# repo 루트를 sys.path에 추가해 `connector_*`·`token_manager` 등 루트 모듈
-# import를 보장한다(테스트 실행 위치와 무관하게 동작하도록).
+# Add the repo root to sys.path to ensure imports of root modules such as `connector_*`·`token_manager`
+# (so it works regardless of where the tests are run from).
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
 def _install_import_only_environment() -> None:
-    """config.py가 import 시 요구하는 환경변수를 더미 값으로만 채운다.
+    """Fills only with dummy values the environment variables that config.py requires at import time.
 
-    실제 KIS 키·계좌 값을 읽거나 기록하지 않고, broker/DB/token side effect도
-    유발하지 않는다. 이미 설정된 키는 덮어쓰지 않는다. 각 테스트 모듈이 자체적으로
-    동일 설치를 수행하지만, conftest가 import되며 유발되는 config import도 안전하게
-    만들기 위해 여기서도 설치한다.
+    It does not read or record real KIS key/account values, and it triggers no broker/DB/token side
+    effects. It does not overwrite already-set keys. Each test module performs the same installation
+    itself, but this is also installed here to make the config import triggered by importing conftest safe.
     """
     config_path = _REPO_ROOT / "config.py"
     if not config_path.exists():
@@ -148,10 +146,10 @@ _install_import_only_environment()
 
 
 # ---------------------------------------------------------------------------
-# 실제 외부 side-effect 진입점 가드(fail-fast)
+# Real external side-effect entrypoint guards (fail-fast)
 #
-# 각 가드는 실제 호출 이전에 즉시 AssertionError로 실패시키며, 어떤 진입점이
-# 가드에 도달했는지 명시한다(Requirement 6.4의 "mock 미적용 대상 보고").
+# Each guard fails immediately with an AssertionError before the real call, and states
+# which entrypoint reached the guard (Requirement 6.4's "report un-mocked targets").
 # ---------------------------------------------------------------------------
 def _guard_requests_post(*args: Any, **kwargs: Any):
     raise AssertionError(
@@ -195,32 +193,31 @@ _TOKEN_FUNCTION_NAMES = (
 
 @pytest.fixture(autouse=True)
 def _guard_real_external_side_effects(monkeypatch):
-    """모든 테스트에서 실제 외부 side-effect 진입점을 가드한다(Requirement 6).
+    """Guards the real external side-effect entrypoints in every test (Requirement 6).
 
-    가드는 테스트와 동일한 function-scoped `monkeypatch`로 설치되며, fixture
-    setup이 테스트 본문보다 먼저 실행되므로 테스트가 자체적으로 상위 수준
-    속성(예: `common.requests.post`, `execute.get_conn`)을 mock으로 대체하면
-    그 값이 가드를 덮어쓴다(per-test monkeypatch 우선).
+    The guards are installed with the same function-scoped `monkeypatch` as the test, and since
+    fixture setup runs before the test body, if a test itself replaces an upper-level attribute
+    (e.g. `common.requests.post`, `execute.get_conn`) with a mock, that value overwrites the guard
+    (per-test monkeypatch precedence).
     """
-    # HTTP 경계: requests.post / requests.get.
+    # HTTP boundary: requests.post / requests.get.
     import requests
 
     monkeypatch.setattr(requests, "post", _guard_requests_post)
     monkeypatch.setattr(requests, "get", _guard_requests_get)
 
-    # DB 경계: 실제 저수준 psycopg.connect.
-    # 상위 수준 get_conn을 테스트가 fake로 대체하면 실제 get_conn이 실행되지
-    # 않아 이 가드에 도달하지 않는다. 아무것도 대체하지 않은 채 실제 연결이
-    # 시도된 경우에만 발동한다.
+    # DB boundary: the real low-level psycopg.connect.
+    # If a test replaces the upper-level get_conn with a fake, the real get_conn does not run
+    # and this guard is not reached. It fires only when a real connection is attempted with
+    # nothing replaced.
     import psycopg
 
     monkeypatch.setattr(psycopg, "connect", _guard_psycopg_connect)
 
-    # Token 경계: token_manager 원본과 connector_order_common 바인딩 모두 가드.
-    # import는 방어적으로 처리해, connector 모듈을 import하지 않는 계약/스모크
-    # 테스트에서도 conftest가 불필요하게 실패하지 않도록 한다. token 발급은
-    # 결국 requests.post를 사용하므로, import가 불가하더라도 HTTP 가드가
-    # 실제 token 발급을 차단한다.
+    # Token boundary: guard both the token_manager originals and the connector_order_common binding.
+    # Handle the import defensively so that conftest does not fail unnecessarily even in contract/smoke
+    # tests that do not import the connector module. Since token issuance ultimately uses requests.post,
+    # the HTTP guard blocks real token issuance even if the import is not possible.
     try:
         import token_manager
     except ImportError:

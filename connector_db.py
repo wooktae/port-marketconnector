@@ -1,7 +1,8 @@
-"""PostgreSQL repository helper 모음.
+"""Collection of PostgreSQL repository helpers.
 
-connector/legacy 테이블의 저장, 갱신, 조회 helper를 제공한다.
-DB 접속 설정은 환경변수 기반 `db_config.get_db_config()`에 의존하며, 호출 시 실제 DB 접근이 발생한다.
+Provides save, update and query helpers for connector/legacy tables.
+DB connection configuration relies on the environment-variable-based `db_config.get_db_config()`,
+and actual DB access occurs when it is called.
 """
 
 import json
@@ -28,7 +29,7 @@ def to_jsonb(value: Any) -> str:
 
 
 def get_conn():
-    """환경변수 기반 DB 설정으로 PostgreSQL connection을 생성한다."""
+    """Creates a PostgreSQL connection using environment-variable-based DB configuration."""
     return psycopg.connect(**get_db_config())
 
 
@@ -913,21 +914,21 @@ def get_latest_order_context(
 
 def list_child_order_requests(parent_order_request_id: int) -> List[Dict[str, Any]]:
     """
-    특정 원 주문에서 파생된 모든 하위 주문을 재귀적으로 조회한다.
+    Recursively queries all child orders derived from a given original order.
 
-    예:
+    Example:
     BUY 10
       └─ MODIFY 11
            └─ CANCEL 12
 
-    list_child_order_requests(10) 호출 시:
+    When list_child_order_requests(10) is called:
     - 11 depth=1
     - 12 depth=2
-    를 모두 반환한다.
+    are all returned.
 
-    주의:
-    - 자기 자신(root)은 제외한다.
-    - View에서 lifecycle 표시용으로 depth를 같이 내려준다.
+    Note:
+    - The node itself (root) is excluded.
+    - depth is also returned for lifecycle display in the View.
     """
     return _fetchall_dict(
         """
@@ -1048,11 +1049,11 @@ def delete_connector_position_snapshots(
     as_of_date,
 ) -> int:
     """
-    특정 계좌/일자의 보유종목 스냅샷을 모두 삭제한다.
+    Deletes all holdings snapshots for a given account/date.
 
-    사용 목적:
-    - 잔고 API output1 기준으로 당일 보유종목 snapshot을 replace 처리하기 위함
-    - output1이 빈 배열이면 기존 stale position row를 제거해서 View에 과거 보유종목이 남지 않게 함
+    Purpose:
+    - To replace the day's holdings snapshot based on the balance API output1
+    - If output1 is an empty array, remove existing stale position rows so that past holdings do not remain in the View
     """
     with get_conn() as conn:
         with conn.cursor() as cur:

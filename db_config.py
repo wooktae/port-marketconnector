@@ -1,7 +1,8 @@
-"""DB connection 설정 생성 helper.
+"""DB connection configuration helper.
 
-PostgreSQL 접속정보를 환경변수에서 읽어 connector repository에 전달한다.
-민감정보 값은 코드나 문서에 기록하지 않고 로컬 환경에서 주입하는 것을 전제로 한다.
+Reads PostgreSQL connection information from environment variables and passes it to
+the connector repository. Sensitive values are not recorded in code or documentation;
+they are assumed to be injected from the local environment.
 """
 
 import os

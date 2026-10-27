@@ -1,14 +1,15 @@
-"""Property test: execution_status 가드 전이는 Terminal 상태를 역행시키지 않는다 (Property 6).
+"""Property test: execution_status guard transitions never revert a Terminal state (Property 6).
 
-이 테스트는 `connector_strategy_order_execute.py`의 상태 가드 전이 함수
-(`claim_strategy_execution_order`, `mark_strategy_execution_order_submitted`,
-`mark_strategy_execution_order_failed`)를 in-memory fake DB store로 검증한다.
+This test validates the state guard transition functions in
+`connector_strategy_order_execute.py` (`claim_strategy_execution_order`,
+`mark_strategy_execution_order_submitted`, `mark_strategy_execution_order_failed`)
+with an in-memory fake DB store.
 
-실제 broker API, token, 운영 DB를 호출하지 않는다. `get_conn`, `_table_info`,
-`_select_exprs`를 fake로 대체하고, fake cursor가 각 함수의 실제 조건부 UPDATE
-WHERE 가드를 그대로 모델링하여 가드 의미만 검증한다. import 시 side effect가
-발생하지 않도록 config 환경변수를 import-only 더미 값으로 주입한 뒤 대상 모듈을
-import한다.
+It does not call the real broker API, token, or operating DB. It replaces `get_conn`,
+`_table_info`, and `_select_exprs` with fakes, and the fake cursor models each function's
+actual conditional UPDATE WHERE guard as-is to validate only the guard semantics. To
+avoid side effects on import, it injects import-only dummy values for the config
+environment variables before importing the target module.
 """
 
 from __future__ import annotations
@@ -24,10 +25,10 @@ from hypothesis import strategies as st
 
 
 def _install_import_only_environment() -> None:
-    """config.py가 import 시 요구하는 환경변수를 더미 값으로만 채운다.
+    """Fill only with dummy values the environment variables that config.py requires on import.
 
-    실제 KIS 키·계좌 값을 읽거나 기록하지 않고, broker/DB/token side effect도
-    유발하지 않는다. 이미 설정된 키는 덮어쓰지 않는다.
+    Does not read or record real KIS key/account values, and does not trigger
+    broker/DB/token side effects. Keys that are already set are not overwritten.
     """
     config_path = Path(__file__).resolve().parents[1] / "config.py"
     source = config_path.read_text(encoding="utf-8-sig")
@@ -103,17 +104,18 @@ ALL_STATUSES = ("REQUESTED", "SUBMITTING", *TERMINAL_STATUSES)
 
 
 class _Store:
-    """단일 strategy_execution_order 행을 모델링하는 in-memory store."""
+    """An in-memory store modeling a single strategy_execution_order row."""
 
     def __init__(self) -> None:
         self.row: dict[str, Any] | None = None
 
 
 class _FakeCursor:
-    """대상 함수의 실제 조건부 UPDATE WHERE 가드를 모델링하는 fake cursor.
+    """A fake cursor that models the target functions' actual conditional UPDATE WHERE guards.
 
-    전체 SQL 파서가 아니라, 세 statement를 keyword로 식별하고 params 기반으로
-    modeled 가드를 적용한다. 가드는 원본 SQL과 정확히 동일한 의미여야 한다.
+    Rather than a full SQL parser, it identifies the three statements by keyword and
+    applies the modeled guards based on params. The guards must have exactly the same
+    semantics as the original SQL.
     """
 
     def __init__(self, store: _Store) -> None:
@@ -223,7 +225,7 @@ class _FakeConn:
 
 @pytest.fixture()
 def fake_store(monkeypatch: pytest.MonkeyPatch) -> _Store:
-    """get_conn과 스키마 helper를 fake로 대체하여 실제 DB 접근을 차단한다."""
+    """Block real DB access by replacing get_conn and the schema helpers with fakes."""
     store = _Store()
 
     monkeypatch.setattr(execmod, "get_conn", lambda: _FakeConn(store))
@@ -240,7 +242,7 @@ def fake_store(monkeypatch: pytest.MonkeyPatch) -> _Store:
     return store
 
 
-# Feature: connector-order-submission-guards, Property 6: execution_status 가드 전이는 Terminal 상태를 역행시키지 않는다
+# Feature: connector-order-submission-guards, Property 6: execution_status guard transitions never revert a Terminal state
 # Validates: Requirements 2.3, 2.5, 2.6, 2.8, 2.9, 2.10, 2.11
 @settings(
     max_examples=200,
@@ -257,15 +259,15 @@ def test_execution_status_guard_transitions_never_revert_terminal(
     initial_status: str,
     initial_corid: int | None,
 ) -> None:
-    """임의 초기 execution_status에서 Claim·mark 가드 전이 의미를 검증한다.
+    """Validate the Claim/mark guard transition semantics from an arbitrary initial execution_status.
 
-    - Claim은 REQUESTED이고 connector_order_request_id IS NULL일 때만 정확히 한 행을
-      SUBMITTING으로 전이하고, 그 외에는 0행(None)으로 상태를 변경하지 않는다.
-    - mark_submitted는 현재 SUBMITTING일 때만 SUBMITTED로 전이한다.
-    - mark_failed는 현재 상태가 Terminal이면 FAILED로 덮어쓰지 않고 기존 상태를 유지한다.
+    - Claim transitions exactly one row to SUBMITTING only when it is REQUESTED and
+      connector_order_request_id IS NULL; otherwise it changes no state (0 rows / None).
+    - mark_submitted transitions to SUBMITTED only when the current state is SUBMITTING.
+    - mark_failed does not overwrite with FAILED when the current state is Terminal, keeping the existing state.
     """
 
-    # --- Claim: REQUESTED + connector_order_request_id IS NULL 일 때만 성공 ---
+    # --- Claim: succeeds only when REQUESTED + connector_order_request_id IS NULL ---
     fake_store.row = {
         "id": order_id,
         "execution_status": initial_status,
@@ -280,11 +282,11 @@ def test_execution_status_guard_transitions_never_revert_terminal(
         assert fake_store.row["execution_status"] == execmod.SUBMITTING_STATUS
     else:
         assert claim_result is None
-        # 상태 불변(skip): 초기값 그대로 유지
+        # State unchanged (skip): the initial value is kept as-is
         assert fake_store.row["execution_status"] == initial_status
         assert fake_store.row["connector_order_request_id"] == initial_corid
 
-    # --- mark_submitted: 현재 SUBMITTING 일 때만 SUBMITTED 전이 ---
+    # --- mark_submitted: transitions to SUBMITTED only when the current state is SUBMITTING ---
     fake_store.row = {
         "id": order_id,
         "execution_status": initial_status,
@@ -305,7 +307,7 @@ def test_execution_status_guard_transitions_never_revert_terminal(
         assert fake_store.row["execution_status"] == initial_status
         assert fake_store.row["connector_order_request_id"] == initial_corid
 
-    # --- mark_failed: Terminal 상태는 FAILED로 덮어쓰지 않음 ---
+    # --- mark_failed: does not overwrite a Terminal state with FAILED ---
     fake_store.row = {
         "id": order_id,
         "execution_status": initial_status,
@@ -317,12 +319,12 @@ def test_execution_status_guard_transitions_never_revert_terminal(
     failed_is_terminal = initial_status in TERMINAL_STATUSES
 
     if failed_is_terminal:
-        # Terminal 역행 차단: 0행, 기존 상태 유지
+        # Block Terminal reversal: 0 rows, keep the existing state
         assert failed_result is None
         assert fake_store.row["execution_status"] == initial_status
         assert fake_store.row["connector_order_request_id"] == initial_corid
     else:
-        # REQUESTED, SUBMITTING 은 Terminal 이 아니므로 FAILED 전이 허용
+        # REQUESTED and SUBMITTING are not Terminal, so the FAILED transition is allowed
         assert failed_result is not None
         assert failed_result["execution_status"] == execmod.FAILED_STATUS
         assert fake_store.row["execution_status"] == execmod.FAILED_STATUS

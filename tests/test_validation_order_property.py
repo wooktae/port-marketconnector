@@ -1,17 +1,21 @@
-"""Property test: 수량 검증은 Fatal_Max 검사보다 먼저 수행된다 (Property 5).
+"""Property test: quantity validation is performed before the Fatal_Max check (Property 5).
 
-이 테스트는 브로커 주문 제출 경계의 순수 함수 `normalize_order_qty`(수량 검증, C1)와
-`check_fatal_max_order_qty`(Fatal Max 검사, C2)의 수행 순서만 검증한다.
+This test validates only the execution order of the broker order submission boundary's
+pure functions `normalize_order_qty` (quantity validation, C1) and
+`check_fatal_max_order_qty` (Fatal Max check, C2).
 
-`connector_order_common.py`에는 두 함수를 조합하는 compose helper가 아직 없고,
-enforcement 연결은 후속 task(전략 주문 `--execute` 루프)의 책임이다. 따라서 여기서는
-production wiring을 수정하지 않고, 설계가 명시한 순서(수량 검증 → Fatal Max)를 그대로
-반영하는 최소 조합을 테스트 안에서 정의한다. Fatal Max 검사가 실제로 수행되었는지를
-spy(call counter)로 관찰하여, 무효 수량 입력 시 수량 검증 오류가 먼저 반환되고 Fatal
-Max 검사는 아예 수행되지 않음을 확인한다.
+`connector_order_common.py` does not yet have a compose helper that combines the two
+functions, and wiring the enforcement is the responsibility of a follow-up task (the
+strategy order `--execute` loop). Therefore, without modifying the production wiring,
+this test defines within itself a minimal composition that reflects the order the design
+specifies (quantity validation -> Fatal Max). By observing with a spy (call counter)
+whether the Fatal Max check was actually performed, it confirms that on an invalid
+quantity input the quantity validation error is returned first and the Fatal Max check is
+not performed at all.
 
-broker API, token, DB 함수를 호출하지 않으며, import 시 실제 side effect가 발생하지
-않도록 config 환경변수를 import-only 더미 값으로 주입한 뒤 대상 모듈을 import한다.
+It does not call broker API, token, or DB functions, and to avoid real side effects on
+import, it injects import-only dummy values for the config environment variables before
+importing the target module.
 """
 
 from __future__ import annotations
@@ -28,10 +32,10 @@ from hypothesis import strategies as st
 
 
 def _install_import_only_environment() -> None:
-    """config.py가 import 시 요구하는 환경변수를 더미 값으로만 채운다.
+    """Fill only with dummy values the environment variables that config.py requires on import.
 
-    실제 KIS 키·계좌 값을 읽거나 기록하지 않고, broker/DB/token side effect도
-    유발하지 않는다. 이미 설정된 키는 덮어쓰지 않는다.
+    Does not read or record real KIS key/account values, and does not trigger
+    broker/DB/token side effects. Keys that are already set are not overwritten.
     """
     config_path = Path(__file__).resolve().parents[1] / "config.py"
     source = config_path.read_text(encoding="utf-8-sig")
@@ -108,18 +112,19 @@ def _normalize_then_check_fatal_max(
     limit: int | None,
     fatal_check: Callable[[int, int | None], int],
 ) -> int:
-    """설계가 명시한 순서를 그대로 반영하는 최소 조합.
+    """A minimal composition that reflects the order the design specifies.
 
-    수량 검증(C1, `normalize_order_qty`)을 먼저 수행하고, 성공한 경우에만 Fatal Max
-    검사(C2)를 수행한다. `fatal_check`는 실제 `check_fatal_max_order_qty`를 감싼 spy로
-    주입되어, 수량 검증 실패 시 Fatal Max 검사가 호출되지 않았음을 관찰할 수 있게 한다.
+    It performs quantity validation (C1, `normalize_order_qty`) first, and performs the
+    Fatal Max check (C2) only on success. `fatal_check` is injected as a spy wrapping the
+    real `check_fatal_max_order_qty`, so that on a quantity validation failure one can
+    observe that the Fatal Max check was not called.
     """
     qty = common.normalize_order_qty(value)
     return fatal_check(qty, limit)
 
 
 def _make_fatal_max_spy():
-    """`check_fatal_max_order_qty` 호출 횟수를 세는 spy를 만든다."""
+    """Create a spy that counts the number of `check_fatal_max_order_qty` calls."""
     calls = {"count": 0}
 
     def spy(qty: int, limit: int | None) -> int:
@@ -130,7 +135,7 @@ def _make_fatal_max_spy():
 
 
 def _is_unparseable_or_non_positive_integer_string(text: str) -> bool:
-    """문자열이 1 이상의 정수로 정규화될 수 없으면 True."""
+    """True if the string cannot be normalized to an integer of 1 or greater."""
     stripped = text.strip()
     try:
         parsed = Decimal(stripped)
@@ -143,7 +148,7 @@ def _is_unparseable_or_non_positive_integer_string(text: str) -> bool:
     return int(parsed) < 1
 
 
-# --- 무효 수량 생성기 (Property 2와 동일 계열) --------------------------------
+# --- Invalid quantity generators (same family as Property 2) --------------------------------
 
 _zero_values = st.sampled_from([0, Decimal(0), 0.0, "0", " 0 "])
 _negative_integers = st.integers(max_value=-1)
@@ -187,7 +192,7 @@ _invalid_quantities = st.one_of(
     _unsupported_types,
 )
 
-# 일반 무효 수량 + 활성 Fatal Max 상한(양의 정수).
+# General invalid quantity + an active Fatal Max limit (positive integer).
 _general_case = st.tuples(
     _invalid_quantities,
     st.integers(min_value=1, max_value=10**6),
@@ -196,20 +201,20 @@ _general_case = st.tuples(
 
 @st.composite
 def _exceeding_case(draw):
-    """상한을 초과하는 규모의 무효 수량과 활성 상한을 함께 생성한다.
+    """Generate an invalid quantity of a magnitude exceeding the limit together with an active limit.
 
-    규모상 Fatal Max를 초과하더라도, 무효 수량이므로 수량 검증 오류가 먼저 반환되어야
-    한다는 점을 명시적으로 검증하기 위한 케이스다.
+    This case explicitly verifies that even if the magnitude exceeds Fatal Max, the
+    quantity validation error must be returned first because it is an invalid quantity.
     """
     limit = draw(st.integers(min_value=1, max_value=10**6))
     magnitude = draw(st.integers(min_value=limit + 1, max_value=limit + 10**6))
     value = draw(
         st.one_of(
-            st.just(-magnitude),  # 규모 초과 음수 정수
-            st.just(str(-magnitude)),  # 규모 초과 음수 정수 문자열
-            st.just(Decimal(magnitude) + Decimal("0.5")),  # 규모 초과 소수
-            st.just(float(magnitude) + 0.5),  # 규모 초과 float 소수
-            st.just(True),  # bool (int 하위 타입이지만 무효)
+            st.just(-magnitude),  # negative integer exceeding the magnitude
+            st.just(str(-magnitude)),  # negative integer string exceeding the magnitude
+            st.just(Decimal(magnitude) + Decimal("0.5")),  # fractional exceeding the magnitude
+            st.just(float(magnitude) + 0.5),  # float fractional exceeding the magnitude
+            st.just(True),  # bool (a subtype of int but invalid)
         )
     )
     return value, limit
@@ -218,17 +223,17 @@ def _exceeding_case(draw):
 _value_and_limit = st.one_of(_general_case, _exceeding_case())
 
 
-# Feature: connector-order-submission-guards, Property 5: 수량 검증은 Fatal_Max 검사보다 먼저 수행된다
+# Feature: connector-order-submission-guards, Property 5: quantity validation is performed before the Fatal_Max check
 # Validates: Requirements 3.13, 3.14
 @settings(max_examples=200)
 @given(case=_value_and_limit)
 def test_quantity_validation_precedes_fatal_max_check(case) -> None:
-    """무효 수량 입력에 대해(상한을 초과하는 규모 포함),
+    """For an invalid quantity input (including magnitudes exceeding the limit),
 
-    수량 검증(C1) → Fatal Max 검사(C2) 순서로 조합했을 때, 항상
-    `QuantityValidationError`(수량 검증 오류)가 먼저 발생하고 `FatalMaxExceededError`가
-    아니어야 한다. 또한 수량 검증이 실패했으므로 Fatal Max 검사는 아예 수행되지 않아야
-    한다(spy call_count == 0).
+    when composed in the order quantity validation (C1) -> Fatal Max check (C2), a
+    `QuantityValidationError` (quantity validation error) must always occur first, and not
+    a `FatalMaxExceededError`. Also, since quantity validation failed, the Fatal Max check
+    must not be performed at all (spy call_count == 0).
     """
     value, limit = case
     fatal_check, calls = _make_fatal_max_spy()
@@ -236,5 +241,5 @@ def test_quantity_validation_precedes_fatal_max_check(case) -> None:
     with pytest.raises(common.QuantityValidationError):
         _normalize_then_check_fatal_max(value, limit, fatal_check)
 
-    # 수량 검증이 먼저 실패했으므로 Fatal Max 검사는 수행되지 않았다.
+    # Since quantity validation failed first, the Fatal Max check was not performed.
     assert calls["count"] == 0

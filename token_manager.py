@@ -1,7 +1,7 @@
-"""KIS access token 파일 처리와 발급/갱신 helper.
+"""KIS access token file handling and issuance/renewal helper.
 
-token 파일을 읽고 쓰며 KIS token endpoint를 호출할 수 있다.
-정적 문서화 작업 중에는 실행하거나 token 값을 출력하지 않는다.
+Reads and writes the token file and can call the KIS token endpoint.
+Do not run it or print token values during static documentation work.
 """
 
 import requests
@@ -10,30 +10,31 @@ import os
 import time
 
 from config import APP_KEY, APP_SECRET, BASE_URL
+from connector_locale import t
 
 TOKEN_FILE = "access_token.txt"
 
-print("[token_manager] 모듈 로드됨")
+print(t("[token_manager] module loaded", "[token_manager] 모듈 로드됨"))
 
 def save_token(token):
-    print("[token_manager] 토큰 파일에 저장")
+    print(t("[token_manager] saving token to file", "[token_manager] 토큰 파일에 저장"))
     with open(TOKEN_FILE, "w") as f:
         f.write(token)
 
 def load_token():
     if os.path.exists(TOKEN_FILE):
-        print("[token_manager] 기존 토큰 파일 발견")
+        print(t("[token_manager] existing token file found", "[token_manager] 기존 토큰 파일 발견"))
         with open(TOKEN_FILE, "r") as f:
             return f.read().strip()
     return None
 
 def delete_token_file():
     if os.path.exists(TOKEN_FILE):
-        print("[token_manager] 토큰 파일 제거")
+        print(t("[token_manager] removing token file", "[token_manager] 토큰 파일 제거"))
         os.remove(TOKEN_FILE)
 
 def issue_new_token():
-    print("[token_manager] 새 토큰 발급 시도")
+    print(t("[token_manager] attempting to issue a new token", "[token_manager] 새 토큰 발급 시도"))
     url = f"{BASE_URL}/oauth2/tokenP"
     body = {
         "grant_type": "client_credentials",
@@ -46,7 +47,7 @@ def issue_new_token():
     try:
         data = res.json()
     except Exception as e:
-        print("[token_manager] 토큰 발급 응답 JSON 파싱 실패:", e)
+        print(t("[token_manager] failed to parse token issuance response JSON:", "[token_manager] 토큰 발급 응답 JSON 파싱 실패:"), e)
         return None
 
     token = data.get("access_token")
@@ -54,41 +55,41 @@ def issue_new_token():
         save_token(token)
         return token
 
-    print("[token_manager] 토큰 발급 실패:", data)
+    print(t("[token_manager] token issuance failed:", "[token_manager] 토큰 발급 실패:"), data)
     return None
 
 def get_access_token():
-    print("[token_manager] get_access_token 호출됨")
+    print(t("[token_manager] get_access_token called", "[token_manager] get_access_token 호출됨"))
 
     token = load_token()
     if token:
-        # 일단 기존 토큰 쓰되 검증/재발급 루틴 수행
-        print("[token_manager] 기존 토큰 재사용")
+        # Use the existing token for now, but run the validation/reissue routine
+        print(t("[token_manager] reusing existing token", "[token_manager] 기존 토큰 재사용"))
         return token
 
-    print("[token_manager] 저장된 토큰이 없어서 새로 발급")
+    print(t("[token_manager] no saved token, issuing a new one", "[token_manager] 저장된 토큰이 없어서 새로 발급"))
     return issue_new_token()
 
 def force_issue_new_token():
-    print("[token_manager] 만료 또는 오류로 토큰 재발급 시도")
+    print(t("[token_manager] reissuing token due to expiry or error", "[token_manager] 만료 또는 오류로 토큰 재발급 시도"))
     delete_token_file()
     return issue_new_token()
 
-# —————— API 호출 중 토큰 오류 체크용 헬퍼 ——————
+# —————— Helper for checking token errors during API calls ——————
 
 def check_and_refresh_token(response_text):
     """
-    API 응답 텍스트에서 토큰 만료/유효성 오류가 있으면
-    토큰 파일 삭제 + 토큰 재발급 후 반환.
-    아니면 None 반환.
+    If the API response text contains a token expiry/validity error,
+    delete the token file, reissue the token and return it.
+    Otherwise return None.
     """
     text = response_text.lower()
-    # 만료 메시지나 인증 오류 메시지 포함돼 있으면
+    # If it contains an expiry message or an authentication error message
     if "token" in text and ("만료" in text or "expired" in text):
-        print("[token_manager] 응답에서 토큰 만료/오류 감지됨:", response_text[:100])
-        # 파일 삭제
+        print(t("[token_manager] token expiry/error detected in response:", "[token_manager] 응답에서 토큰 만료/오류 감지됨:"), response_text[:100])
+        # Delete the file
         delete_token_file()
-        # 재발급
+        # Reissue
         return issue_new_token()
     return None
 

@@ -1,7 +1,7 @@
-"""KIS 잔고/보유 조회와 snapshot 저장 흐름.
+"""KIS balance/holdings query and snapshot save flow.
 
-브로커 잔고 API를 호출하고 connector 및 legacy balance/holding 테이블에 저장할 수 있다.
-실행 시 token 처리, 외부 API 호출, DB 쓰기가 모두 발생할 수 있는 entrypoint다.
+Calls the broker balance API and can save to the connector and legacy balance/holding tables.
+This is an entrypoint where token handling, external API calls and DB writes can all occur on execution.
 """
 
 import json
@@ -23,6 +23,7 @@ from connector_db import (
     upsert_connector_position_snapshots,
 )
 from token_manager import check_and_refresh_token, get_access_token
+from connector_locale import t
 
 SOURCE_VERSION = "connector-balance-1.0.0"
 API_NAME = "inquire-balance"
@@ -49,7 +50,7 @@ def _to_int(v, default=0):
 
 
 def fetch_and_save_balance():
-    """잔고 API 응답을 파싱해 계좌/보유 snapshot과 legacy 테이블에 저장한다."""
+    """Parses the balance API response and saves it to the account/holdings snapshot and legacy tables."""
     account_id = ensure_connector_account(
         account_no=PAPER_ACNT,
         account_product_code=ACNT_PRDT_CD,
@@ -60,7 +61,7 @@ def fetch_and_save_balance():
 
     token = get_access_token()
     if not token:
-        print("❌ 토큰 없음")
+        print(t("❌ No token", "❌ 토큰 없음"))
         return None
 
     def request_balance(tok):
@@ -103,7 +104,7 @@ def fetch_and_save_balance():
                 response_message=str(e),
                 is_success=False,
             )
-            print("❌ 잔고 요청 에러:", e)
+            print(t("❌ Balance request error:", "❌ 잔고 요청 에러:"), e)
             return None, params, None
 
     res, params, latency_ms = request_balance(token)
@@ -112,17 +113,17 @@ def fetch_and_save_balance():
 
     new_tok = check_and_refresh_token(res.text)
     if new_tok:
-        print("🔄 토큰 오류 감지 → 재발급 + 재요청")
+        print(t("🔄 Token error detected → reissue + retry", "🔄 토큰 오류 감지 → 재발급 + 재요청"))
         res, params, latency_ms = request_balance(new_tok)
         if res is None:
             return None
 
-    print("📌 잔고 조회 Status:", res.status_code)
+    print(t("📌 Balance query Status:", "📌 잔고 조회 Status:"), res.status_code)
 
     try:
         data = res.json()
     except Exception as e:
-        print("❌ JSON 파싱 실패:", e)
+        print(t("❌ JSON parsing failed:", "❌ JSON 파싱 실패:"), e)
         return None
 
     insert_api_call_log(
@@ -141,11 +142,11 @@ def fetch_and_save_balance():
         latency_ms=latency_ms,
     )
 
-    print("\n🔹 잔고 원본 JSON ↓")
+    print(t("\n🔹 Balance raw JSON ↓", "\n🔹 잔고 원본 JSON ↓"))
     print(json.dumps(data, indent=2, ensure_ascii=False))
 
     if data.get("rt_cd") != "0":
-        print("❌ 조회 오류:", data.get("msg1", data))
+        print(t("❌ Query error:", "❌ 조회 오류:"), data.get("msg1", data))
         return None
 
     summary_list = data.get("output2", [])
@@ -252,38 +253,38 @@ def fetch_and_save_balance():
     # ---------------------------------------------------------
     # position snapshot replace
     # ---------------------------------------------------------
-    # 중요:
-    # connector_position_snapshot은 account_no + as_of_date 기준으로
-    # "현재 보유종목 전체 스냅샷"으로 취급한다.
+    # Important:
+    # connector_position_snapshot is treated as a "full snapshot of current holdings"
+    # keyed by account_no + as_of_date.
     #
-    # 따라서 먼저 해당 일자의 기존 snapshot을 삭제한 뒤,
-    # 이번 API output1 기준으로 다시 저장한다.
+    # Therefore, first delete the existing snapshot for that date, then
+    # save again based on this API's output1.
     #
-    # 이 처리를 하지 않으면:
-    # - 오전에 보유종목이 있었고
-    # - 오후에 전량 매도되어 output1=[] 이 된 경우
-    # - 기존 position row가 남아서 View에 stale position이 표시될 수 있다.
+    # Without this handling:
+    # - if there were holdings in the morning
+    # - and everything was sold in the afternoon so output1=[]
+    # - the existing position rows would remain and a stale position could be shown in the View.
     deleted_position_count = delete_connector_position_snapshots(
         account_no=PAPER_ACNT,
         as_of_date=as_of_date,
     )
 
     if deleted_position_count:
-        print(f"🧹 기존 connector_position_snapshot 삭제 완료: {deleted_position_count}건")
+        print(t(f"🧹 Existing connector_position_snapshot deleted: {deleted_position_count} rows", f"🧹 기존 connector_position_snapshot 삭제 완료: {deleted_position_count}건"))
 
     if legacy_holdings:
         save_holdings_legacy(legacy_holdings)
 
     if connector_positions:
         upsert_connector_position_snapshots(connector_positions)
-        print(f"✅ connector_position_snapshot 저장 완료: {len(connector_positions)}건")
+        print(t(f"✅ connector_position_snapshot saved: {len(connector_positions)} rows", f"✅ connector_position_snapshot 저장 완료: {len(connector_positions)}건"))
     else:
-        print("✅ connector_position_snapshot 비움 완료: 현재 보유종목 0건")
+        print(t("✅ connector_position_snapshot cleared: 0 current holdings", "✅ connector_position_snapshot 비움 완료: 현재 보유종목 0건"))
 
     if legacy_holdings:
-        print("✅ holdings legacy 저장 완료")
+        print(t("✅ holdings legacy saved", "✅ holdings legacy 저장 완료"))
     else:
-        print("⚠ 저장할 legacy holdings 데이터 없음")
+        print(t("⚠ No legacy holdings data to save", "⚠ 저장할 legacy holdings 데이터 없음"))
 
     return {
         "balance": connector_balance_record,

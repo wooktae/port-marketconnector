@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from psycopg.rows import dict_row
 
 from connector_db import get_conn
+from connector_locale import t
 from connector_order_common import (
     check_fatal_max_order_qty,
     normalize_order_qty,
@@ -301,7 +302,7 @@ def normalize_retryable_rejected_orders(
             candidates = [dict(row) for row in cur.fetchall()]
 
     if not candidates:
-        print("[RETRY_NORMALIZER] retryable rejected order 없음")
+        print(t("[RETRY_NORMALIZER] no retryable rejected order", "[RETRY_NORMALIZER] retryable rejected order 없음"))
         return []
 
     mode = "EXECUTE" if execute else "DRY_RUN"
@@ -748,7 +749,7 @@ def run(args: argparse.Namespace) -> int:
     )
 
     if not orders:
-        print("[NO_TARGET] REQUESTED strategy order 없음")
+        print(t("[NO_TARGET] no REQUESTED strategy order", "[NO_TARGET] REQUESTED strategy order 없음"))
         return 0
 
     mode = "EXECUTE" if args.execute else "DRY_RUN"

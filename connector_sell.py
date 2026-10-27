@@ -1,20 +1,21 @@
-"""KIS 국내 주식 현금 매도 주문 wrapper.
+"""KIS domestic stock cash sell order wrapper.
 
-공통 주문 제출 모듈에 매도 TR_ID와 주문 입력값을 전달한다.
-CLI 실행 시 브로커 주문 제출과 DB 주문 요청 저장이 발생할 수 있다.
+Passes the sell TR_ID and order input values to the common order submission module.
+CLI execution can trigger broker order submission and DB order-request saving.
 """
 
 import argparse
 from typing import Optional
 
 from connector_order_common import submit_cash_order
+from connector_locale import t
 
 SOURCE_VERSION = "connector-order-sell-1.0.0"
 API_NAME = "order-cash-sell"
 
-# 중요:
-# 네 KIS 모의투자/실전 문서 기준으로 다를 수 있어.
-# 현금 매도 TR_ID가 다르면 아래 값만 바꾸면 돼.
+# Important:
+# This can differ based on your KIS paper/live trading documentation.
+# If the cash sell TR_ID differs, change only the value below.
 TR_ID = "VTTC0801U"
 
 
@@ -34,7 +35,7 @@ def sell_stock(
     signal_score: Optional[float] = None,
     signal_position_size: Optional[float] = None,
 ):
-    """매도 주문 요청을 공통 주문 제출 흐름으로 위임한다."""
+    """Delegates the sell order request to the common order submission flow."""
     return submit_cash_order(
         request_type="SELL",
         api_name=API_NAME,
@@ -69,7 +70,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.yes:
-        print("❌ 실제 매도 주문 차단: 실행하려면 --yes를 붙여줘")
+        print(t("❌ Real sell order blocked: add --yes to execute", "❌ 실제 매도 주문 차단: 실행하려면 --yes를 붙여줘"))
         raise SystemExit(1)
 
     result = sell_stock(
