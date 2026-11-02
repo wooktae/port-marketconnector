@@ -1,0 +1,12 @@
+{
+  "enabled": false,
+  "fillSync": {
+    "region": "ap-northeast-2",
+    "cluster": "",
+    "taskDefinition": "",
+    "container": "strategy-execution",
+    "subnets": [],
+    "securityGroups": [],
+    "assignPublicIp": "DISABLED"
+  }
+}

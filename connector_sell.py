@@ -34,10 +34,12 @@ def sell_stock(
     signal_type: Optional[str] = None,
     signal_score: Optional[float] = None,
     signal_position_size: Optional[float] = None,
+    retry_token_errors: bool = True,
 ):
     """Delegates the sell order request to the common order submission flow."""
     return submit_cash_order(
         request_type="SELL",
+        **({"retry_token_errors": False} if not retry_token_errors else {}),
         api_name=API_NAME,
         tr_id=TR_ID,
         stock_code=stock_code,

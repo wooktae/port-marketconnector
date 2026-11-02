@@ -30,6 +30,14 @@ chmod 600 "${SRC}/config.py"
 chmod 700 "${SCRIPTS}/run_connector_balance_daily.sh"
 chmod 755 "${SCRIPTS}/run_intraday_snapshot_and_evaluate.sh"
 
+# Non-secret intraday settings are separate from Daily secret injection.
+# Preserve operator settings on subsequent deployments; first installation is OFF.
+install -d -m 700 -o ec2-user -g ec2-user "${APP_ROOT}/runtime"
+if [ ! -e "${APP_ROOT}/runtime/intraday-auto.json" ]; then
+  install -m 600 -o ec2-user -g ec2-user \
+    "${STAGING}/deployment/intraday-auto.default.json" "${APP_ROOT}/runtime/intraday-auto.json"
+fi
+
 echo "APPLICATION_SOURCE_INSTALL=SUCCESS"
 echo "RUNTIME_TOKEN_FILES_PRESERVED=YES"
 echo "AFTER_INSTALL=SUCCESS"

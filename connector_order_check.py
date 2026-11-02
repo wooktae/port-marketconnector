@@ -401,7 +401,7 @@ def _derive_status(order_qty: int, executed_qty: int, cancel_flag: str):
     return "FILLED", "FILLED"
 
 
-def _process_detail_orders(account_id: int, orders: list):
+def _process_detail_orders(account_id: int, orders: list, *, expected_request_id=None):
     legacy_rows = []
 
     for idx, o in enumerate(orders, start=1):
@@ -416,6 +416,8 @@ def _process_detail_orders(account_id: int, orders: list):
         broker_order_no = o.get("odno", "")
         broker_branch_code = o.get("ord_gno_brno", "")
         order_request_id = _find_order_request_id(broker_order_no, broker_branch_code)
+        if expected_request_id is not None and order_request_id != expected_request_id:
+            raise ValueError("INTRADAY_HISTORY_MAPPING_MISMATCH")
 
         order_qty = _to_int(o.get("ord_qty", "0"))
         executed_qty = _to_int(o.get("tot_ccld_qty", "0"))
@@ -595,6 +597,7 @@ def _process_summary_fallback(
     stock_code: Optional[str],
     order_no: Optional[str],
     branch_code: Optional[str],
+    *, expected_request_id=None,
 ):
     """Corrects a query result that has no detailed order list but only a summary into a single order's event/fill."""
     summary = data.get("output2", {}) or {}
@@ -619,6 +622,9 @@ def _process_summary_fallback(
         branch_code=branch_code,
     )
 
+    if expected_request_id is not None and (
+            len(fallback_candidates) != 1 or fallback_candidates[0][0] != expected_request_id):
+        raise ValueError("INTRADAY_SUMMARY_MAPPING_MISMATCH")
     if len(fallback_candidates) != 1:
         print(
             "⚠ summary fallback 생략: "
@@ -640,6 +646,10 @@ def _process_summary_fallback(
         order_no=order_no,
         branch_code=branch_code,
     )
+
+    if expected_request_id is not None and (
+            not context or context["order_request_id"] != expected_request_id):
+        raise ValueError("INTRADAY_SUMMARY_CONTEXT_MISMATCH")
 
     if not context:
         print(t("⚠ summary exists but connector_order_request mapping failed", "⚠ summary는 있지만 connector_order_request 매핑 실패"))
@@ -1060,6 +1070,7 @@ def fetch_and_save_orders(
     order_no: Optional[str] = None,
     branch_code: Optional[str] = None,
     try_broad_search_if_empty: bool = True,
+    expected_order_request_id: Optional[int] = None,
 ):
     """
     1) If possible, query directly by a specific order number/stock
@@ -1074,6 +1085,23 @@ def fetch_and_save_orders(
         environment="paper",
         account_alias="main-paper",
     )
+
+    scope_kwargs = {}
+    if expected_order_request_id is not None:
+        if (isinstance(expected_order_request_id, bool) or not isinstance(expected_order_request_id, int)
+                or expected_order_request_id <= 0 or not all((stock_code, order_no, branch_code))
+                or try_broad_search_if_empty):
+            raise ValueError("INTRADAY_HISTORY_SCOPE_REQUIRED")
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""select id from connector.connector_order_request
+                               where id = %s and account_id = %s and ticker_code = %s
+                                 and broker_order_no = %s and broker_branch_code = %s
+                                 and request_type = 'SELL' and signal_type = 'INTRADAY_STOP_SELL'""",
+                            (expected_order_request_id, account_id, stock_code, order_no, branch_code))
+                if not cur.fetchone():
+                    raise ValueError("INTRADAY_HISTORY_SCOPE_MISMATCH")
+        scope_kwargs = {"expected_request_id": expected_order_request_id}
 
     direct_params = _build_params(
         start_date=start_date,
@@ -1099,7 +1127,11 @@ def fetch_and_save_orders(
     print(json.dumps(orders, indent=2, ensure_ascii=False))
 
     if orders:
-        _process_detail_orders(account_id, orders)
+        if expected_order_request_id is not None and any(
+                o.get("pdno") != stock_code or o.get("odno") != order_no
+                or o.get("ord_gno_brno") != branch_code for o in orders):
+            raise ValueError("INTRADAY_HISTORY_RESPONSE_MISMATCH")
+        _process_detail_orders(account_id, orders, **scope_kwargs)
         return data
 
     # ---------------------------------------------------------
@@ -1129,6 +1161,7 @@ def fetch_and_save_orders(
             stock_code=stock_code,
             order_no=order_no,
             branch_code=branch_code,
+            **scope_kwargs,
         )
         return data
 
@@ -1187,6 +1220,7 @@ def fetch_and_save_orders(
         stock_code=stock_code,
         order_no=order_no,
         branch_code=branch_code,
+        **scope_kwargs,
     )
     return data
 

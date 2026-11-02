@@ -603,6 +603,7 @@ def _request_api(
     endpoint: str,
     tr_id: str,
     request_payload: Dict[str, Any],
+    retry_token_errors: bool = True,
 ):
     token = get_access_token()
     if not token:
@@ -650,8 +651,8 @@ def _request_api(
     if res is None:
         return None, None, None
 
-    new_tok = check_and_refresh_token(res.text)
-    if new_tok:
+    new_tok = check_and_refresh_token(res.text) if retry_token_errors else None
+    if new_tok and retry_token_errors:
         print(t("🔄 Token error detected → reissue + retry", "🔄 토큰 오류 감지 → 재발급 + 재요청"))
         res, latency_ms = _send(new_tok)
         if res is None:
@@ -744,6 +745,7 @@ def submit_cash_order(
     signal_score: Optional[float] = None,
     signal_position_size: Optional[float] = None,
     endpoint: str = DEFAULT_ORDER_ENDPOINT,
+    retry_token_errors: bool = True,
 ):
     """Records a cash buy/sell order in the DB and then submits it to the broker order API."""
     request_type = request_type.upper()
@@ -821,6 +823,7 @@ def submit_cash_order(
         endpoint=endpoint,
         tr_id=tr_id,
         request_payload=request_payload,
+        **({"retry_token_errors": False} if not retry_token_errors else {}),
     )
 
     if res is None or data is None:

@@ -99,10 +99,11 @@ def fetch_latest_positions(account_no: Optional[str]) -> Dict[str, Dict[str, Any
     """
 
     effective_account = account_no if account_no else None
+    params.extend((effective_account, effective_account))
 
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(sql, (effective_account, effective_account))
+            cur.execute(sql, tuple(params))
             rows = [dict(row) for row in cur.fetchall()]
 
     return {row["ticker_code"]: row for row in rows}
@@ -170,7 +171,7 @@ def existing_intraday_stop_order(position_state_id: int) -> Optional[Dict[str, A
         where source_position_state_id = %s
           and source_type = 'INTRADAY_STOP_SELL'
           and action_type = 'SELL'
-          and execution_status in ('READY', 'REQUESTED', 'SUBMITTED', 'ACCEPTED', 'PARTIAL_FILLED')
+          and execution_status in ('READY', 'REQUESTED', 'SUBMITTING', 'SUBMITTED', 'ACCEPTED', 'PARTIAL_FILLED')
         order by id desc
         limit 1
     """
@@ -646,7 +647,7 @@ def insert_intraday_check(record: Dict[str, Any]) -> int:
     return int(row[0])
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, *, on_created=None) -> int:
     now_ts = _now_utc()
     account_no = args.account_no
 
@@ -724,6 +725,9 @@ def run(args: argparse.Namespace) -> int:
             if args.create_order and evaluation["should_stop"]:
                 created_order_id = create_intraday_stop_order(evaluation, check_id)
                 attach_created_execution_order(check_id, created_order_id)
+
+                if on_created is not None:
+                    on_created(created_order_id, check_id)
 
                 if args.notify_slack:
                     notify_intraday_stop_slack(
