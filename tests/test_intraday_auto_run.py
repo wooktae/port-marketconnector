@@ -2,18 +2,17 @@
 
 import argparse
 import ast
-from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 import importlib.util
 import json
 import random
-from pathlib import Path
 import unittest
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from unittest.mock import MagicMock, Mock, patch
-
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("intraday_under_test", ROOT / "connector_intraday_auto_run.py")
@@ -23,18 +22,18 @@ spec.loader.exec_module(auto)
 
 def records():
     now = datetime.now(timezone.utc)
-    order = dict(id=10, account_id=2, account_no="TEST_ACCOUNT", ticker_code="TEST_STOCK",
-                 action_type="SELL", source_type=auto.SIGNAL, signal_type=auto.SIGNAL,
-                 execution_mode=auto.MODE, order_method="MARKET", source_position_state_id=3,
-                 order_qty=2, execution_status="READY", connector_order_request_id=None,
-                 result_payload={"intraday_auto": {"runId": "TEST_RUN", "checkId": 4, "stage": "READY"}})
-    position = dict(id=3, account_id=2, account_no="TEST_ACCOUNT", ticker_code="TEST_STOCK",
-                    position_status="OPEN", remaining_qty=2, entry_price=100)
-    snapshot = dict(account_id=2, account_no="TEST_ACCOUNT", ticker_code="TEST_STOCK",
-                    quantity=2, sellable_quantity=2, as_of_ts=now, current_price=90)
-    check = dict(account_id=2, account_no="TEST_ACCOUNT", ticker_code="TEST_STOCK",
-                 position_state_id=3, created_execution_order_id=10, environment="paper",
-                 should_stop=True, check_ts=now, pnl_rate=Decimal("-0.10"), entry_price=100)
+    order = {"id": 10, "account_id": 2, "account_no": "TEST_ACCOUNT", "ticker_code": "TEST_STOCK",
+                 "action_type": "SELL", "source_type": auto.SIGNAL, "signal_type": auto.SIGNAL,
+                 "execution_mode": auto.MODE, "order_method": "MARKET", "source_position_state_id": 3,
+                 "order_qty": 2, "execution_status": "READY", "connector_order_request_id": None,
+                 "result_payload": {"intraday_auto": {"runId": "TEST_RUN", "checkId": 4, "stage": "READY"}}}
+    position = {"id": 3, "account_id": 2, "account_no": "TEST_ACCOUNT", "ticker_code": "TEST_STOCK",
+                    "position_status": "OPEN", "remaining_qty": 2, "entry_price": 100}
+    snapshot = {"account_id": 2, "account_no": "TEST_ACCOUNT", "ticker_code": "TEST_STOCK",
+                    "quantity": 2, "sellable_quantity": 2, "as_of_ts": now, "current_price": 90}
+    check = {"account_id": 2, "account_no": "TEST_ACCOUNT", "ticker_code": "TEST_STOCK",
+                 "position_state_id": 3, "created_execution_order_id": 10, "environment": "paper",
+                 "should_stop": True, "check_ts": now, "pnl_rate": Decimal("-0.10"), "entry_price": 100}
     return order, position, snapshot, check
 
 
@@ -158,19 +157,19 @@ class LifecycleTests(OfflineCase):
                 self.sell.reset_mock()
                 _, position, snapshot, _ = records()
                 snapshot["current_price"] = price
-                ns = dict(argparse=argparse, Any=Any, Dict=Dict, List=List, Optional=Optional, Decimal=Decimal,
-                          datetime=datetime, timezone=timezone, SOURCE_VERSION="SYNTHETIC",
-                          DEFAULT_ENVIRONMENT="paper", _now_utc=lambda: datetime.now(timezone.utc),
-                          existing_intraday_stop_order=Mock(return_value=None),
-                          fetch_latest_balance=Mock(return_value=None),
-                          count_non_open_active=Mock(return_value=[]),
-                          fetch_open_positions=Mock(return_value=[position]),
-                          fetch_latest_positions=Mock(return_value={"TEST_STOCK": snapshot}),
-                          insert_intraday_check=Mock(return_value=4),
-                          create_intraday_stop_order=Mock(return_value=10),
-                          attach_created_execution_order=Mock(), notify_intraday_stop_slack=Mock(),
-                          _json_payload=lambda value: json.dumps(value, default=str), print=Mock())
-                exec(compile(ast.Module(body=functions, type_ignores=[]), str(path), "exec"), ns)
+                ns = {"argparse": argparse, "Any": Any, "Dict": dict, "List": list, "Optional": Optional, "Decimal": Decimal,
+                          "datetime": datetime, "timezone": timezone, "SOURCE_VERSION": "SYNTHETIC",
+                          "DEFAULT_ENVIRONMENT": "paper", "_now_utc": lambda: datetime.now(timezone.utc),
+                          "existing_intraday_stop_order": Mock(return_value=None),
+                          "fetch_latest_balance": Mock(return_value=None),
+                          "count_non_open_active": Mock(return_value=[]),
+                          "fetch_open_positions": Mock(return_value=[position]),
+                          "fetch_latest_positions": Mock(return_value={"TEST_STOCK": snapshot}),
+                          "insert_intraday_check": Mock(return_value=4),
+                          "create_intraday_stop_order": Mock(return_value=10),
+                          "attach_created_execution_order": Mock(), "notify_intraday_stop_slack": Mock(),
+                          "_json_payload": lambda value: json.dumps(value, default=str), "print": Mock()}
+                exec(compile(ast.Module(body=functions, type_ignores=[]), str(path), "exec"), ns)  # noqa: S102 - Isolated test code with synthetic dependencies only.
                 args = SimpleNamespace(account_no="TEST_ACCOUNT", create_order=True,
                                        notify_slack=False, hard_stop_rate="-0.10",
                                        slack_function_name="MOCK", slack_region="MOCK",
@@ -326,7 +325,7 @@ class ValidationTests(OfflineCase):
             (0, "order_qty", Decimal("1.5")), (1, "remaining_qty", 0),
             (1, "position_status", "SELL_ORDERED"), (2, "sellable_quantity", 0),
             (2, "account_no", "OTHER"), (2, "current_price", 91),
-            (2, "as_of_ts", datetime.now()),
+            (2, "as_of_ts", datetime.now(timezone.utc).replace(tzinfo=None)),
             (2, "as_of_ts", datetime.now(timezone.utc) - timedelta(minutes=3)),
             (2, "as_of_ts", datetime.now(timezone.utc) + timedelta(minutes=1)),
             (3, "should_stop", False), (3, "created_execution_order_id", 99),
@@ -347,7 +346,7 @@ class StoreTests(OfflineCase):
         order["result_payload"]["intraday_auto"].update(runId="OLD_RUN", stage="REQUESTED",
                                                        originRunId="ORIGINAL_RUN")
         check["check_ts"] -= timedelta(minutes=30)
-        store, conn, cur = self.setup_db([order, position, snapshot, check,
+        store, _conn, cur = self.setup_db([order, position, snapshot, check,
                                         {"conflict": False}, {**order, "execution_status": "REQUESTED"}])
         self.assertIsNotNone(store.advance(10, 4, "TEST_ACCOUNT", "NEW_RUN", "REQUESTED", "REQUESTED"))
         metadata = json.loads(cur.execute.call_args.args[1][1])["intraday_auto"]
@@ -363,7 +362,7 @@ class StoreTests(OfflineCase):
                 order, position, snapshot, check = records()
                 check["check_ts"] -= timedelta(minutes=30)
                 snapshot[field] = value
-                store, conn, cur = self.setup_db([order, position, snapshot, check])
+                store, conn, _cur = self.setup_db([order, position, snapshot, check])
                 with self.assertRaises(auto.SafetyBlock):
                     store.advance(10, 4, "TEST_ACCOUNT", "NEW_RUN", "READY", "REQUESTED")
                 conn.commit.assert_not_called()
@@ -372,7 +371,7 @@ class StoreTests(OfflineCase):
         order, position, snapshot, check = records()
         position["entry_price"] = 110
         check["check_ts"] -= timedelta(minutes=30)
-        store, conn, cur = self.setup_db([order, position, snapshot, check])
+        store, _conn, _cur = self.setup_db([order, position, snapshot, check])
         with self.assertRaises(auto.SafetyBlock):
             store.advance(10, 4, "TEST_ACCOUNT", "NEW_RUN", "READY", "REQUESTED")
 
@@ -382,13 +381,13 @@ class StoreTests(OfflineCase):
             with self.subTest(metadata=metadata):
                 order, position, snapshot, check = records()
                 order["result_payload"] = {"intraday_auto": metadata}
-                store, conn, cur = self.setup_db([order, position, snapshot, check])
+                store, conn, _cur = self.setup_db([order, position, snapshot, check])
                 with self.assertRaises(auto.SafetyBlock):
                     store.advance(10, 4, "TEST_ACCOUNT", "NEW_RUN", "READY", "REQUESTED")
                 conn.commit.assert_not_called()
 
     def test_pending_query_requires_provenance_link_and_no_attempt(self):
-        store, conn, cur = self.setup_db([])
+        store, _conn, cur = self.setup_db([])
         cur.fetchall.side_effect = None
         cur.fetchall.return_value = [{"id": 10, "check_id": 4}]
         self.assertEqual(store.pending("TEST_ACCOUNT"), [(10, 4)])
@@ -446,10 +445,10 @@ class StoreTests(OfflineCase):
     def test_real_store_stale_status_and_wrong_owner_do_not_update(self):
         order, position, snapshot, check = records()
         order["execution_status"] = "SUBMITTING"
-        store, conn, cur = self.setup_db([order])
+        store, _conn, _cur = self.setup_db([order])
         self.assertIsNone(store.advance(10, 4, "TEST_ACCOUNT", "TEST_RUN", "READY", "REQUESTED"))
         order["execution_status"] = "REQUESTED"
-        store, conn, cur = self.setup_db([order, position, snapshot, check])
+        store, _conn, _cur = self.setup_db([order, position, snapshot, check])
         with self.assertRaises(auto.SafetyBlock):
             store.advance(10, 4, "TEST_ACCOUNT", "TEST_RUN", "REQUESTED", "SUBMITTING")
 
@@ -468,14 +467,14 @@ class StoreTests(OfflineCase):
         conn.commit.assert_called_once_with()
 
     def test_position_sync_failure_rolls_back_submitted_transition(self):
-        store, conn, cur = self.setup_db([{"id": 7}, {"id": 10}, None])
+        store, conn, _cur = self.setup_db([{"id": 7}, {"id": 10}, None])
         with self.assertRaises(auto.SafetyBlock):
             store.submitted(records()[0], 7, "TEST_RUN")
         conn.commit.assert_not_called()
         self.assertIs(conn.__exit__.call_args.args[0], auto.SafetyBlock)
 
     def test_db_claim_exception_does_not_reach_broker(self):
-        store, conn, cur = self.setup_db([])
+        store, _conn, cur = self.setup_db([])
         cur.execute.side_effect = RuntimeError("synthetic DB failure")
         self.assertEqual(auto.submit_created(store, [(10, 4)], "TEST_ACCOUNT", "TEST_RUN",
                                             self.sell, self.enabled), 1)
@@ -486,21 +485,20 @@ class StoreTests(OfflineCase):
         order["execution_status"] = "REQUESTED"
         order["result_payload"] = {"intraday_auto": {
             "runId": "TEST_RUN", "checkId": 4, "stage": "REQUESTED"}}
-        store, conn, cur = self.setup_db([order, position, snapshot, check,
+        store, conn, _cur = self.setup_db([order, position, snapshot, check,
                                         {"conflict": False}, {**order, "execution_status": "SUBMITTING"}])
         result = store.advance(10, 4, "TEST_ACCOUNT", "TEST_RUN", "REQUESTED", "SUBMITTING")
         self.assertEqual(result["execution_status"], "SUBMITTING")
         conn.commit.assert_called_once_with()
 
     def test_lock_released_even_after_evaluation_error(self):
-        store, conn, cur = self.setup_db([(True,)])
-        with self.assertRaises(RuntimeError):
-            with store.cycle("TEST_ACCOUNT"):
-                raise RuntimeError("synthetic evaluation error")
+        store, _conn, cur = self.setup_db([(True,)])
+        with self.assertRaises(RuntimeError), store.cycle("TEST_ACCOUNT"):
+            raise RuntimeError("synthetic evaluation error")
         self.assertIn("pg_advisory_unlock", cur.execute.call_args.args[0])
 
     def test_intraday_lock_failure_is_normal_skip(self):
-        store, conn, cur = self.setup_db([(False,)])
+        store, _conn, cur = self.setup_db([(False,)])
         with store.cycle("TEST_ACCOUNT") as acquired:
             self.assertFalse(acquired)
         self.assertEqual(cur.execute.call_count, 1)
@@ -508,10 +506,10 @@ class StoreTests(OfflineCase):
 
 class FailedEvidenceTests(OfflineCase):
     def rejected(self, status="FAILED"):
-        return dict(id=7, account_id=2, ticker_code="TEST_STOCK", request_type="SELL",
-                    request_status=status, broker_order_no=None, accepted_at=None,
-                    rejection_code="SYNTHETIC_REJECTION",
-                    response_payload={"rt_cd": "1", "msg_cd": "SYNTHETIC_REJECTION", "output": {}})
+        return {"id": 7, "account_id": 2, "ticker_code": "TEST_STOCK", "request_type": "SELL",
+                    "request_status": status, "broker_order_no": None, "accepted_at": None,
+                    "rejection_code": "SYNTHETIC_REJECTION",
+                    "response_payload": {"rt_cd": "1", "msg_cd": "SYNTHETIC_REJECTION", "output": {}}}
 
     def test_explicit_rejection_without_fills_or_children_is_required(self):
         cur = MagicMock()
@@ -552,7 +550,7 @@ class FailedEvidenceTests(OfflineCase):
         return cur
 
     def test_proven_failed_strategy_and_connector_are_excluded(self):
-        other = dict(execution_status="FAILED", connector_order_request_id=7, result_payload={})
+        other = {"execution_status": "FAILED", "connector_order_request_id": 7, "result_payload": {}}
         rejected = self.rejected()
         cur = self.conflict_cursor([other], [rejected],
                                   [rejected, {"evidence_conflict": False}, {"evidence_conflict": False}])
@@ -561,13 +559,13 @@ class FailedEvidenceTests(OfflineCase):
     def test_active_uncertain_and_unlinked_strategy_orders_remain_conflicts(self):
         for status in ("READY", "REQUESTED", "SUBMITTING", "SUBMITTED", "PARTIAL_FILLED", "FAILED", None):
             with self.subTest(status=status):
-                other = dict(execution_status=status, connector_order_request_id=None, result_payload={})
+                other = {"execution_status": status, "connector_order_request_id": None, "result_payload": {}}
                 cur = self.conflict_cursor([other], [])
                 self.assertTrue(auto.Store(Mock(), object())._has_conflicts(cur, records()[0]))
 
     def test_unknown_marker_blocks_failed_strategy_despite_linked_rejection(self):
-        other = dict(execution_status="FAILED", connector_order_request_id=7,
-                     result_payload={"intraday_auto": {"stage": "SUBMITTING"}})
+        other = {"execution_status": "FAILED", "connector_order_request_id": 7,
+                     "result_payload": {"intraday_auto": {"stage": "SUBMITTING"}}}
         cur = self.conflict_cursor([other], [self.rejected()])
         self.assertTrue(auto.Store(Mock(), object())._has_conflicts(cur, records()[0]))
         cur.fetchone.assert_not_called()
@@ -594,14 +592,14 @@ class RetryPolicyTests(OfflineCase):
                 requests = Mock()
                 requests.post.return_value = response
                 refresh = Mock(return_value="SYNTHETIC_REFRESH")
-                ns = dict(Any=object, Dict=dict, get_access_token=Mock(return_value="SYNTHETIC"),
-                          BASE_URL="https://example.invalid", APP_KEY="SYNTHETIC",
-                          APP_SECRET="SYNTHETIC", requests=requests,
-                          time=Mock(time=Mock(return_value=0)), insert_api_call_log=Mock(),
-                          check_and_refresh_token=refresh, t=lambda english, korean: "MOCK")
-                exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), ns)
-                kwargs = dict(account_id=2, api_category="ORDER", api_name="MOCK",
-                              http_method="POST", endpoint="/mock", tr_id="MOCK", request_payload={})
+                ns = {"Any": object, "Dict": dict, "get_access_token": Mock(return_value="SYNTHETIC"),
+                          "BASE_URL": "https://example.invalid", "APP_KEY": "SYNTHETIC",
+                          "APP_SECRET": "SYNTHETIC", "requests": requests,
+                          "time": Mock(time=Mock(return_value=0)), "insert_api_call_log": Mock(),
+                          "check_and_refresh_token": refresh, "t": lambda english, korean: "MOCK"}
+                exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), ns)  # noqa: S102 - Isolated test code with synthetic dependencies only.
+                kwargs = {"account_id": 2, "api_category": "ORDER", "api_name": "MOCK",
+                              "http_method": "POST", "endpoint": "/mock", "tr_id": "MOCK", "request_payload": {}}
                 if not retry:
                     kwargs["retry_token_errors"] = False
                 ns["_request_api"](**kwargs)
@@ -615,8 +613,8 @@ class RetryPolicyTests(OfflineCase):
         fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "sell_stock")
         for retry in (False, True):
             submit = Mock()
-            ns = dict(Optional=Optional, submit_cash_order=submit, API_NAME="MOCK", TR_ID="MOCK")
-            exec(compile(ast.Module(body=[fn], type_ignores=[]), str(path), "exec"), ns)
+            ns = {"Optional": Optional, "submit_cash_order": submit, "API_NAME": "MOCK", "TR_ID": "MOCK"}
+            exec(compile(ast.Module(body=[fn], type_ignores=[]), str(path), "exec"), ns)  # noqa: S102 - Isolated test code with synthetic dependencies only.
             kwargs = {} if retry else {"retry_token_errors": False}
             ns["sell_stock"]("TEST_STOCK", 2, **kwargs)
             if retry:

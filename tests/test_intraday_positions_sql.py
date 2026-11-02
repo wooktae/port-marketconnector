@@ -5,11 +5,10 @@ modules. The only database entrypoint is an injected Mock connection/cursor.
 """
 
 import ast
-from pathlib import Path
 import unittest
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Optional
 from unittest.mock import MagicMock, Mock, patch
-
 
 SOURCE = Path(__file__).resolve().parents[1] / "connector_intraday_position_evaluate.py"
 
@@ -43,11 +42,11 @@ class FetchLatestPositionsTests(unittest.TestCase):
             if isinstance(node, ast.FunctionDef) and node.name == "fetch_latest_positions"
         )
         namespace = {
-            "Any": Any, "Dict": Dict, "List": List, "Optional": Optional,
+            "Any": Any, "Dict": dict, "List": list, "Optional": Optional,
             "get_conn": self.get_conn, "dict_row": self.row_factory,
         }
         isolated = ast.Module(body=[function], type_ignores=[])
-        exec(compile(isolated, str(SOURCE), "exec"), namespace)
+        exec(compile(isolated, str(SOURCE), "exec"), namespace)  # noqa: S102 - Isolated test code with synthetic dependencies only.
         self.fetch = namespace["fetch_latest_positions"]
 
     def assert_query(self, expected_params, account_filtered):

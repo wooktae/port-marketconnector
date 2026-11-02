@@ -1,14 +1,14 @@
 """Offline tests: settings, ID-scoped history, ECS fill handoff, no real I/O."""
 import ast
-from datetime import datetime, timezone
 import importlib.util
 import json
 import sys
 import types
-from pathlib import Path
 import unittest
-from unittest.mock import MagicMock, Mock, patch
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
+from unittest.mock import MagicMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,13 +34,13 @@ class PrepareTests(unittest.TestCase):
             self.addCleanup(blocked.assert_not_called)
 
     def config(self):
-        return dict(cluster="MOCK_CLUSTER", taskDefinition="mock-execution:10", container="strategy-execution",
-                    subnets=["subnet-abc"], securityGroups=["sg-abc"], assignPublicIp="DISABLED")
+        return {"cluster": "MOCK_CLUSTER", "taskDefinition": "mock-execution:10", "container": "strategy-execution",
+                    "subnets": ["subnet-abc"], "securityGroups": ["sg-abc"], "assignPublicIp": "DISABLED"}
 
     def row(self):
-        return dict(id=10, account_id=2, ticker_code="TEST_STOCK", connector_order_request_id=7,
-                    broker_order_no="MOCK_ORDER", broker_branch_code="MOCK_BRANCH",
-                    requested_at=datetime.now(timezone.utc), connector_status="ACCEPTED")
+        return {"id": 10, "account_id": 2, "ticker_code": "TEST_STOCK", "connector_order_request_id": 7,
+                    "broker_order_no": "MOCK_ORDER", "broker_branch_code": "MOCK_BRANCH",
+                    "requested_at": datetime.now(timezone.utc), "connector_status": "ACCEPTED"}
 
     def test_missing_file_overrides_inherited_true_with_off(self):
         with patch.dict(settings.os.environ, {"INTRADAY_AUTO_SELL_ENABLED": "true"}), \
@@ -126,14 +126,14 @@ class PrepareTests(unittest.TestCase):
         legacy = types.ModuleType("execution_sync_sell_fill")
         legacy.main = Mock()
         with patch.dict(sys.modules, {"execution_sync_sell_fill": legacy}), self.assertRaises(RuntimeError):
-            exec(compile(command[2], "<bootstrap>", "exec", optimize=2), {})
+            exec(compile(command[2], "<bootstrap>", "exec", optimize=2), {})  # noqa: S102 - Isolated test code with synthetic dependencies only.
         legacy.main.assert_not_called()
 
     def test_ecs_failure_exit_or_timeout_is_not_relaunched(self):
         for state in ({"tasks": [{"lastStatus": "STOPPED", "containers": [
                           {"name": "strategy-execution", "exitCode": 1}]}]},
                       {"tasks": [{"lastStatus": "RUNNING"}]}):
-            def respond(args):
+            def respond(args, state=state):
                 return {"tasks": [{"taskArn": "MOCK_TASK"}]} if args[1] == "run-task" else state
             call = Mock(side_effect=respond)
             with self.assertRaises(RuntimeError):
@@ -172,12 +172,12 @@ class PrepareTests(unittest.TestCase):
         conn = MagicMock()
         conn.__enter__.return_value = conn
         conn.cursor.return_value = cur
-        ns = dict(Optional=Optional, PAPER_ACNT="TEST_ACCOUNT", ACNT_PRDT_CD="MOCK",
-                  ensure_connector_account=Mock(return_value=2), get_conn=Mock(return_value=conn),
-                  _build_params=Mock(return_value={}), _call_order_history=Mock(), print=Mock(),
-                  json=json, t=lambda a, b: "MOCK", _process_detail_orders=Mock(),
-                  _process_summary_fallback=Mock(), _to_int=int, _to_float=float)
-        exec(compile(ast.Module(body=[fn], type_ignores=[]), str(path), "exec"), ns)
+        ns = {"Optional": Optional, "PAPER_ACNT": "TEST_ACCOUNT", "ACNT_PRDT_CD": "MOCK",
+                  "ensure_connector_account": Mock(return_value=2), "get_conn": Mock(return_value=conn),
+                  "_build_params": Mock(return_value={}), "_call_order_history": Mock(), "print": Mock(),
+                  "json": json, "t": lambda a, b: "MOCK", "_process_detail_orders": Mock(),
+                  "_process_summary_fallback": Mock(), "_to_int": int, "_to_float": float}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), str(path), "exec"), ns)  # noqa: S102 - Isolated test code with synthetic dependencies only.
         return ns
 
     def test_history_scoped_rejects_other_response_rows_before_writes(self):
@@ -206,13 +206,13 @@ class PrepareTests(unittest.TestCase):
         names = {"_process_detail_orders", "_process_summary_fallback"}
         functions = [n for n in ast.parse(path.read_text(encoding="utf-8-sig")).body
                      if isinstance(n, ast.FunctionDef) and n.name in names]
-        ns = dict(Optional=Optional, _parse_order_datetime=Mock(), _find_order_request_id=Mock(return_value=99),
-                  _to_int=int, _to_float=float, print=Mock(), t=lambda a, b: "MOCK",
-                  _count_summary_fallback_candidates=Mock(return_value=[(99,)]),
-                  _find_latest_order_context=Mock(return_value={"order_request_id": 99}),
-                  save_trade_orders_legacy=Mock(), insert_order_event=Mock(), upsert_fill=Mock(),
-                  update_order_request_after_response=Mock())
-        exec(compile(ast.Module(body=functions, type_ignores=[]), str(path), "exec"), ns)
+        ns = {"Optional": Optional, "_parse_order_datetime": Mock(), "_find_order_request_id": Mock(return_value=99),
+                  "_to_int": int, "_to_float": float, "print": Mock(), "t": lambda a, b: "MOCK",
+                  "_count_summary_fallback_candidates": Mock(return_value=[(99,)]),
+                  "_find_latest_order_context": Mock(return_value={"order_request_id": 99}),
+                  "save_trade_orders_legacy": Mock(), "insert_order_event": Mock(), "upsert_fill": Mock(),
+                  "update_order_request_after_response": Mock()}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), str(path), "exec"), ns)  # noqa: S102 - Isolated test code with synthetic dependencies only.
         with self.assertRaises(ValueError):
             ns["_process_detail_orders"](2, [{"odno": "MOCK", "ord_gno_brno": "MOCK"}], expected_request_id=7)
         with self.assertRaises(ValueError):
