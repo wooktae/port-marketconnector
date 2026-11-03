@@ -11,16 +11,25 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import json
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 
 MODE = "PAPER_INTRADAY"
 SIGNAL = "INTRADAY_STOP_SELL"
 MAX_AGE_SECONDS = 120
+INTRADAY_RUN_ID_PREFIX = "a17d0000-0000-4000-8000-"
 
 
 class SafetyBlock(RuntimeError):
     pass
+
+
+def intraday_strategy_run_id(order_id):
+    """Return a deterministic UUID accepted by connector_order_request."""
+    if type(order_id) is not int or not 0 < order_id < 1 << 48:
+        raise SafetyBlock("strategy_run_id")
+    value = INTRADAY_RUN_ID_PREFIX + format(order_id, "012x")
+    return str(UUID(value))
 
 
 def enabled():
@@ -142,7 +151,9 @@ class Store:
                        and c.position_state_id = o.source_position_state_id
                        and c.environment = 'paper' and c.should_stop = true
                        and not exists (select 1 from connector.connector_order_request r
-                                       where r.strategy_run_id = 'intraday:' || o.id::text)
+                                       where r.strategy_run_id::text =
+                                             'a17d0000-0000-4000-8000-' ||
+                                             lpad(to_hex(o.id), 12, '0'))
                      order by o.id
                 """, (account,))
                 return [(row["id"], row["check_id"]) for row in cur.fetchall()]
@@ -158,7 +169,8 @@ class Store:
                       join connector.connector_order_request r on r.id = o.connector_order_request_id
                        and r.account_id = o.account_id and r.ticker_code = o.ticker_code
                        and r.request_type = 'SELL' and r.signal_type = 'INTRADAY_STOP_SELL'
-                       and r.strategy_run_id = 'intraday:' || o.id::text
+                       and r.strategy_run_id::text =
+                           'a17d0000-0000-4000-8000-' || lpad(to_hex(o.id), 12, '0')
                      where o.account_no = %s and o.execution_mode = 'PAPER_INTRADAY'
                        and o.source_type = 'INTRADAY_STOP_SELL' and o.signal_type = 'INTRADAY_STOP_SELL'
                        and o.action_type = 'SELL' and o.execution_status = 'SUBMITTED'
@@ -291,7 +303,9 @@ class Store:
                        and signal_type = 'INTRADAY_STOP_SELL' and account_no = %s
                        and connector_order_request_id is null
                        and not exists (select 1 from connector.connector_order_request r
-                                       where r.strategy_run_id = 'intraday:' || strategy_execution_order.id::text)
+                                       where r.strategy_run_id::text =
+                                             'a17d0000-0000-4000-8000-' ||
+                                             lpad(to_hex(strategy_execution_order.id), 12, '0'))
                      returning *
                 """, (new, json.dumps({"intraday_auto": owner}), order_id, old, account))
                 updated = cur.fetchone()
@@ -308,7 +322,7 @@ class Store:
                                  and request_status in ('ACCEPTED', 'SUBMITTED', 'FILLED', 'PARTIAL_FILLED')
                                  and broker_order_no is not null""",
                             (request_id, order["account_id"], order["ticker_code"],
-                             "intraday:" + str(order["id"]), order["order_qty"]))
+                             intraday_strategy_run_id(order["id"]), order["order_qty"]))
                 if not cur.fetchone():
                     raise SafetyBlock("request_scope")
                 cur.execute("""
@@ -355,7 +369,7 @@ def submit_created(store, created, account, run_id, sell, is_enabled=enabled):
                 return 1
             result = sell(stock_code=order["ticker_code"], qty=int(order["order_qty"]),
                           order_method="MARKET", order_price=0,
-                          signal_type=SIGNAL, strategy_run_id="intraday:" + str(order_id),
+                          signal_type=SIGNAL, strategy_run_id=intraday_strategy_run_id(order_id),
                           retry_token_errors=False)
             if not (isinstance(result, dict) and result.get("order_request_id")
                     and result.get("broker_order_no")

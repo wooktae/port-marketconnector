@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import MagicMock, Mock, patch
+from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("intraday_under_test", ROOT / "connector_intraday_auto_run.py")
@@ -185,7 +186,18 @@ class LifecycleTests(OfflineCase):
         self.assertEqual(self.store.transitions, ["REQUESTED", "SUBMITTING", "SUBMITTED"])
         self.sell.assert_called_once()
         self.assertEqual(self.sell.call_args.kwargs["qty"], 2)
+        self.assertEqual(self.sell.call_args.kwargs["strategy_run_id"],
+                         auto.intraday_strategy_run_id(10))
         self.assertIs(self.sell.call_args.kwargs["retry_token_errors"], False)
+
+    def test_intraday_strategy_run_id_is_deterministic_uuid(self):
+        value = auto.intraday_strategy_run_id(10)
+        self.assertEqual(str(UUID(value)), value)
+        self.assertEqual(value, auto.intraday_strategy_run_id(10))
+        self.assertNotEqual(value, auto.intraday_strategy_run_id(11))
+        for invalid in (True, 0, -1, 1 << 48, "10"):
+            with self.subTest(invalid=invalid), self.assertRaises(auto.SafetyBlock):
+                auto.intraday_strategy_run_id(invalid)
 
     def test_same_order_reexecution_submits_once(self):
         self.submit()
@@ -395,7 +407,8 @@ class StoreTests(OfflineCase):
         self.assertEqual(params, ("TEST_ACCOUNT",))
         for clause in ("in ('READY', 'REQUESTED')", "connector_order_request_id is null",
                        "c.created_execution_order_id = o.id", "'checkId'", "'stage'",
-                       "not exists", "r.strategy_run_id", "PAPER_INTRADAY"):
+                       "not exists", "r.strategy_run_id::text", "lpad(to_hex(o.id)",
+                       "PAPER_INTRADAY"):
             self.assertIn(clause, sql)
 
     def test_created_registration_requires_linked_evaluation_and_never_overwrites_owner(self):
@@ -463,6 +476,8 @@ class StoreTests(OfflineCase):
         store, conn, cur = self.setup_db([{"id": 7}, {"id": 10}, {"id": 3}])
         store.submitted(records()[0], 7, "TEST_RUN")
         self.assertIn("strategy_run_id = %s", cur.execute.call_args_list[0].args[0])
+        self.assertEqual(cur.execute.call_args_list[0].args[1][3],
+                         auto.intraday_strategy_run_id(10))
         self.assertIn("position_status = 'SELL_ORDERED'", cur.execute.call_args.args[0])
         conn.commit.assert_called_once_with()
 

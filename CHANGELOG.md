@@ -23,6 +23,7 @@ Records the primary change history of port-marketconnector code and documentatio
 | Kill Switch OFF | KIS GET and read-only SQL evaluation replace snapshot/check persistence and reconciliation in the OFF path. |
 | Snapshot time | Balance and intraday snapshot writers use aware UTC timestamps; evaluation rejects future, naive and stale data. Existing rows are untouched. |
 | Execution window | Dispatcher and EC2 enforce weekdays 09:10 through the 15:10 minute, including delivery delays and a pre-submission recheck. |
+| Intraday request identity | Intraday execution order IDs map deterministically to UUID values before use with the UUID-backed Connector `strategy_run_id`; duplicate guards use the same mapping. |
 
 ### Added
 
