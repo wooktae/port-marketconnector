@@ -18,7 +18,7 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 import requests
 
@@ -232,7 +232,7 @@ def _parse_as_of_date(summary: dict):
             return datetime.strptime(ord_dt, "%Y%m%d").date()
         except Exception:
             pass
-    return datetime.now().date()
+    return datetime.now(timezone(timedelta(hours=9))).date()
 
 
 def _build_balance_record(account_id: int, summary: dict, data: dict, as_of_date, as_of_ts):
@@ -300,7 +300,6 @@ def _build_position_records(account_id: int, holdings: list, as_of_date, as_of_t
 def refresh_intraday_snapshot(*, fail_on_open_mismatch: bool = True):
     print("===== INTRADAY_SNAPSHOT_REFRESH START =====")
     print(f"[INFO] source_version={SOURCE_VERSION}")
-    print(f"[INFO] account_no={PAPER_ACNT}")
 
     account_id = ensure_connector_account(
         account_no=PAPER_ACNT,
@@ -337,7 +336,7 @@ def refresh_intraday_snapshot(*, fail_on_open_mismatch: bool = True):
         return EXIT_API_ERROR
 
     as_of_date = _parse_as_of_date(summary)
-    as_of_ts = datetime.now()
+    as_of_ts = datetime.now(timezone.utc)
 
     balance_record = _build_balance_record(
         account_id=account_id,

@@ -371,7 +371,10 @@ def submit_created(store, created, account, run_id, sell, is_enabled=enabled):
     return 1 if errors else 0
 
 
-def run_cycle(store, account, refresh, evaluate, sell, args, is_enabled=enabled, *, observe=None):
+def run_cycle(store, account, refresh, evaluate, sell, args, is_enabled=enabled, *, observe=None, in_window=None):
+    if in_window is not None and not in_window():
+        event("OUTSIDE_EXECUTION_WINDOW")
+        return 0
     with store.cycle(account) as acquired:
         if not acquired:
             event("DUPLICATE_CYCLE")
@@ -383,6 +386,9 @@ def run_cycle(store, account, refresh, evaluate, sell, args, is_enabled=enabled,
             except Exception:
                 event("FILL_SYNC_ERROR")
                 return 1
+        if in_window is not None and not in_window():
+            event("OUTSIDE_EXECUTION_WINDOW")
+            return 0
         if refresh() != 0:
             event("SNAPSHOT_FAILED")
             return 1
@@ -390,6 +396,9 @@ def run_cycle(store, account, refresh, evaluate, sell, args, is_enabled=enabled,
         def on_created(order_id, check_id):
             store.register_created(order_id, check_id, account, run_id)
             created.append((order_id, check_id))
+        if in_window is not None and not in_window():
+            event("OUTSIDE_EXECUTION_WINDOW")
+            return 0
         status = evaluate(args, on_created=on_created)
         if status != 0:
             return status
@@ -407,9 +416,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--account-no", required=True)
     args = parser.parse_args()
-    from connector_intraday_settings import apply_settings
+    from connector_intraday_settings import apply_settings, intraday_window_open
     from connector_intraday_reconcile import reconcile, validate_fill_config, sync_ecs
+    if not intraday_window_open():
+        event("OUTSIDE_EXECUTION_WINDOW")
+        return 0
     settings = apply_settings()
+    if not enabled():
+        from connector_intraday_readonly import run_read_only
+        return run_read_only(args.account_no)
     if enabled():
         validate_fill_config(settings.get("fillSync"))
     # Lazy imports: tests/imports never load credentials or contact services.
@@ -440,7 +455,9 @@ def main():
         ids = reconcile(store, account, run_id, settings.get("fillSync", {}), fetch_and_save_orders)
         store.report_fills(account, ids)
     return run_cycle(Store(get_conn, dict_row), args.account_no,
-                     refresh_intraday_snapshot, run, sell_stock, evaluation_args, observe=observe)
+                     refresh_intraday_snapshot, run, sell_stock, evaluation_args,
+                     is_enabled=lambda: enabled() and intraday_window_open(),
+                     observe=observe, in_window=intraday_window_open)
 
 
 if __name__ == "__main__":

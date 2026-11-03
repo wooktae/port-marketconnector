@@ -13,6 +13,31 @@ Records the primary change history of port-marketconnector code and documentatio
 | Execution records | Record only validation actually performed |
 | Sensitive information | No verbatim token · account · order number · secret · ARN · endpoint |
 
+## 2026-11-03 — Intraday operating safety repairs
+
+### Fixed
+
+| Item | Change |
+| --- | --- |
+| Settings ownership | Root SSM accepts the named application owner's private settings only at the protected default runtime path. Existing unsafe-file rejection remains. |
+| Kill Switch OFF | KIS GET and read-only SQL evaluation replace snapshot/check persistence and reconciliation in the OFF path. |
+| Snapshot time | Balance and intraday snapshot writers use aware UTC timestamps; evaluation rejects future, naive and stale data. Existing rows are untouched. |
+| Execution window | Dispatcher and EC2 enforce weekdays 09:10 through the 15:10 minute, including delivery delays and a pre-submission recheck. |
+
+### Added
+
+| Item | Change |
+| --- | --- |
+| Read-only verification | Account-linked DB entry prices, KIS holdings/current prices and FAILED sell evidence are inspected without order calls or persistence. |
+| Dispatcher source | `deployment/intraday_dispatcher.py` preserves the deployed handler and adds the shared execution window. |
+| Regression coverage | Settings ownership, late delivery, OFF-mode isolation, API failures, quantities and future timestamps use synthetic dependencies. |
+
+### Security
+
+No stop threshold, Daily business rule, Scheduler or IAM change is included.
+Runtime fill configuration requires a verified pinned task and existing ECS permissions;
+configuration readiness does not imply successful operational fill synchronization.
+
 ## 2026-10-01 — Bundle dependency and Artifact Contract hardening
 
 ### Added

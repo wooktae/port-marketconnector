@@ -8,6 +8,7 @@ connector_intraday_position_evaluate.py
 connector_intraday_auto_run.py
 connector_intraday_settings.py
 connector_intraday_reconcile.py
+connector_intraday_readonly.py
 deployment/intraday-auto.default.json
 connector_intraday_snapshot_refresh.py
 connector_modify.py

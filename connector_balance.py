@@ -6,7 +6,7 @@ This is an entrypoint where token handling, external API calls and DB writes can
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import requests
@@ -158,7 +158,7 @@ def fetch_and_save_balance():
     except Exception:
         as_of_date = pd.Timestamp.now().date()
 
-    as_of_ts = datetime.now()
+    as_of_ts = datetime.now(timezone.utc)
 
     legacy_balance_record = {
         "account_no": PAPER_ACNT,

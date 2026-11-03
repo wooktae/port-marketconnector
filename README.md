@@ -345,8 +345,8 @@ MarketConnector runs on EC2 via SSM RunCommand.
 | --- | --- |
 | EC2 start | 07:50 KST Scheduler |
 | Daily execution | Step Functions → SSM |
-| Intraday execution | 09:10–15:50 KST · 10-minute interval |
-| Execution order | Snapshot Refresh → Position Evaluate |
+| Intraday execution | Weekdays 09:10–15:10 KST · 37 scheduled runs at 10-minute intervals |
+| Execution order | OFF: KIS GET and read-only DB evaluation; enabled: Snapshot Refresh → Position Evaluate |
 | Notification | event notifier Lambda |
 | EC2 stop | 15:50 KST Scheduler |
 
@@ -359,6 +359,32 @@ MarketConnector runs on EC2 via SSM RunCommand.
 | EC2 start Scheduler | `portfolio-paper-ec2-start-0750-kst` |
 | EC2 stop Scheduler | `portfolio-paper-marketconnector-stop-1550-kst` |
 | Intraday Scheduler | `portfolio-paper-intraday-snapshot-evaluate-10min-kst` |
+
+The existing intraday schedule covers 09:10–09:50. The `1000-1450-kst` and
+`1500-1510-kst` schedules use the same `portfolio-paper-intraday-snapshot-evaluate-`
+prefix and target, covering the remaining times without overlap.
+
+Both the Dispatcher and EC2 runner reject calls outside weekdays 09:10 through
+the 15:10 minute, including delayed delivery. The gate is checked again before
+SSM dispatch and before submission; this does not change Daily scheduling.
+
+With `INTRADAY_AUTO_SELL_ENABLED=false`, the runner uses an existing token for
+KIS holdings/current-price GET requests and a PostgreSQL read-only transaction.
+It evaluates DB entry prices and account holdings without saving snapshots,
+checks, orders, API logs or fills, and without invoking a notification or ECS task.
+Transport, JSON, broker and account-link failures return an error without retrying
+an order or issuing a token. A missing broker order number never proves rejection.
+
+Runtime settings remain private regular files. Root SSM may read settings owned
+by the named application user only at the fixed runtime path with protected parent
+directories; symlinks, unrelated owners and writable settings remain blocked.
+Snapshot writers use aware UTC timestamps. Future, naive and stale snapshots cannot
+trigger a stop; historical records are not rewritten. Daily business rules are unchanged.
+
+`fillSync` must reference a revision-pinned Execution task exposing
+`intraday-id-scope-v1`. Its task/network configuration alone does not grant the EC2
+role ECS or PassRole permission. Keep automatic submission OFF until both the
+permission boundary and order-number-based synchronization are verified.
 
 Do not record actual ARNs, instance ids, command ids, account-id and public IPs in the documentation.
 

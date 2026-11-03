@@ -95,7 +95,7 @@ def fetch_latest_positions(account_no: Optional[str]) -> Dict[str, Dict[str, Any
         from connector.connector_position_snapshot cps
         join latest_date ld on ld.as_of_date = cps.as_of_date
         where (%s::varchar is null or cps.account_no = %s)
-        order by cps.ticker_code
+        order by cps.ticker_code, cps.as_of_ts, cps.id
     """
 
     effective_account = account_no if account_no else None
@@ -186,7 +186,7 @@ def snapshot_age_minutes(snapshot_ts: Optional[datetime], now_ts: datetime) -> O
     if snapshot_ts is None:
         return None
     if snapshot_ts.tzinfo is None:
-        snapshot_ts = snapshot_ts.replace(tzinfo=timezone.utc)
+        return None
     return Decimal(str((now_ts - snapshot_ts).total_seconds() / 60.0))
 
 
@@ -197,6 +197,7 @@ def evaluate_position(
     now_ts: datetime,
     hard_stop_rate: Decimal,
     max_snapshot_age_minutes: int,
+    existing_order_lookup=None,
 ) -> Dict[str, Any]:
     warnings: List[str] = []
 
@@ -221,6 +222,8 @@ def evaluate_position(
         age = snapshot_age_minutes(snapshot_ts, now_ts)
         if age is None:
             warnings.append("SNAPSHOT_TS_MISSING")
+        elif age < 0:
+            warnings.append("FUTURE_SNAPSHOT")
         elif age > Decimal(max_snapshot_age_minutes):
             warnings.append(f"STALE_SNAPSHOT:{age:.2f}m")
 
@@ -248,12 +251,14 @@ def evaluate_position(
         and sellable_qty > 0
         and current_price is not None
         and current_price > 0
-        and not any(w.startswith("STALE_SNAPSHOT") for w in warnings)
+        and snapshot_qty is not None and snapshot_qty > 0
+        and not any(w.startswith(("STALE_SNAPSHOT", "FUTURE_SNAPSHOT", "SNAPSHOT_TS_MISSING")) for w in warnings)
     ):
         should_stop = True
         stop_reason = "INTRADAY_HARD_STOP"
 
-    if existing_intraday_stop_order(int(position["id"])):
+    lookup = existing_order_lookup or existing_intraday_stop_order
+    if lookup(int(position["id"])):
         warnings.append("DUPLICATE_INTRADAY_STOP_ORDER_READY_OR_SUBMITTED")
         should_stop = False
         stop_reason = "DUPLICATE_INTRADAY_STOP_ORDER"

@@ -225,6 +225,10 @@ Do not add a default or automatic-execution fallback that bypasses the approval 
 | File | Role |
 | --- | --- |
 | `connector_intraday_position_evaluate.py` | OPEN position hard stop evaluation |
+| `connector_intraday_auto_run.py` | Scoped enabled execution and OFF-mode read-only routing; execution window gate |
+| `connector_intraday_readonly.py` | KIS GET and account-linked read-only DB verification without persistence or orders |
+| `connector_intraday_settings.py` | Private runtime settings validation and shared KST execution window |
+| `deployment/intraday_dispatcher.py` | Existing Dispatcher Lambda source; late-delivery gate before SSM dispatch |
 
 ### Responsibility boundary
 
