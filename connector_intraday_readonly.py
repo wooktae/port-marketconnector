@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
+import time
 
 
 class ReadOnlyFailure(RuntimeError):
@@ -27,7 +28,7 @@ def integer(value):
 
 
 class BrokerReader:
-    def __init__(self, get, token, base_url, key, secret, account, product):
+    def __init__(self, get, token, base_url, key, secret, account, product, sleeper=time.sleep):
         if not token:
             raise ReadOnlyFailure("EXISTING_TOKEN_REQUIRED")
         from urllib.parse import urlparse
@@ -37,11 +38,15 @@ class BrokerReader:
         self.headers = {"authorization": "Bearer " + token, "appkey": key,
                         "appsecret": secret, "custtype": "P", "Content-Type": "application/json"}
         self.account, self.product = account, product
+        self.sleeper = sleeper
 
     def query(self, endpoint, tr_id, params):
         from connector_intraday_settings import intraday_window_open
         if not intraday_window_open():
             raise ReadOnlyFailure("OUTSIDE_EXECUTION_WINDOW")
+        # KIS GET endpoints share a short request-rate boundary. Pace reads only;
+        # order submission retains its separate no-retry contract.
+        self.sleeper(0.25)
         try:
             headers = {**self.headers, "tr_id": tr_id}
             if params.get("CTX_AREA_FK100") or params.get("CTX_AREA_NK100"):

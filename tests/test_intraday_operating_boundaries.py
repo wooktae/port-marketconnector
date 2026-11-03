@@ -58,8 +58,9 @@ def test_unsafe_settings_remain_blocked_and_clear_inherited_switch(mode, uid):
 def broker(response=None):
     response = response or SimpleNamespace(status_code=200, headers={}, json=lambda: {"rt_cd": "0", "output1": []})
     get = Mock(return_value=response)
+    sleeper = Mock()
     return readonly.BrokerReader(get, "MOCK_TOKEN", "https://openapivts.koreainvestment.com:29443",
-                               "MOCK_KEY", "MOCK_SECRET", "TEST_ACCOUNT", "01"), get
+                               "MOCK_KEY", "MOCK_SECRET", "TEST_ACCOUNT", "01", sleeper=sleeper), get
 
 
 @pytest.mark.parametrize("response", [
@@ -73,6 +74,14 @@ def test_read_only_http_json_and_broker_failures_do_not_retry(response):
     with patch.object(settings, "intraday_window_open", return_value=True), pytest.raises(readonly.ReadOnlyFailure):
         reader.holdings()
     assert get.call_count == 1
+
+
+def test_read_only_get_is_paced_without_order_retry():
+    reader, get = broker()
+    with patch.object(settings, "intraday_window_open", return_value=True):
+        assert reader.holdings() == {}
+    reader.sleeper.assert_called_once_with(0.25)
+    get.assert_called_once()
 
 
 @pytest.mark.parametrize("value", [True, -1, "1.2", "NaN", "Infinity"])

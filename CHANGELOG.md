@@ -28,7 +28,7 @@ Records the primary change history of port-marketconnector code and documentatio
 
 | Item | Change |
 | --- | --- |
-| Read-only verification | Account-linked DB entry prices, KIS holdings/current prices and FAILED sell evidence are inspected without order calls or persistence. |
+| Read-only verification | Account-linked DB entry prices, paced KIS holdings/current-price GETs and FAILED sell evidence are inspected without order calls or persistence. |
 | Dispatcher source | `deployment/intraday_dispatcher.py` preserves the deployed handler and adds the shared execution window. |
 | Regression coverage | Settings ownership, late delivery, OFF-mode isolation, API failures, quantities and future timestamps use synthetic dependencies. |
 
