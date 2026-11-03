@@ -64,7 +64,7 @@ def broker(response=None):
 
 
 @pytest.mark.parametrize("response", [
-    SimpleNamespace(status_code=500),
+    SimpleNamespace(status_code=400),
     SimpleNamespace(status_code=200, json=Mock(side_effect=ValueError)),
     SimpleNamespace(status_code=200, json=lambda: {"rt_cd": "1"}),
     SimpleNamespace(status_code=200, headers={}, json=lambda: {"rt_cd": "0", "output1": None}),
@@ -76,11 +76,22 @@ def test_read_only_http_json_and_broker_failures_do_not_retry(response):
     assert get.call_count == 1
 
 
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_read_only_throttling_and_server_errors_have_bounded_get_retry(status):
+    response = SimpleNamespace(status_code=status)
+    reader, get = broker(response)
+    with patch.object(settings, "intraday_window_open", return_value=True), \
+            pytest.raises(readonly.ReadOnlyFailure, match=f"KIS_HTTP_ERROR_{status}"):
+        reader.holdings()
+    assert get.call_count == 3
+    assert reader.sleeper.call_count == 3
+
+
 def test_read_only_get_is_paced_without_order_retry():
     reader, get = broker()
     with patch.object(settings, "intraday_window_open", return_value=True):
         assert reader.holdings() == {}
-    reader.sleeper.assert_called_once_with(0.25)
+    reader.sleeper.assert_called_once_with(1.0)
     get.assert_called_once()
 
 

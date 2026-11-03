@@ -44,22 +44,31 @@ class BrokerReader:
         from connector_intraday_settings import intraday_window_open
         if not intraday_window_open():
             raise ReadOnlyFailure("OUTSIDE_EXECUTION_WINDOW")
-        # KIS GET endpoints share a short request-rate boundary. Pace reads only;
-        # order submission retains its separate no-retry contract.
-        self.sleeper(0.25)
-        try:
-            headers = {**self.headers, "tr_id": tr_id}
-            if params.get("CTX_AREA_FK100") or params.get("CTX_AREA_NK100"):
-                headers["tr_cont"] = "N"
-            response = self.get(self.base_url + endpoint, headers=headers,
-                                params=params, timeout=20)
-            if response.status_code != 200:
-                raise ReadOnlyFailure("KIS_HTTP_ERROR")
-            data = response.json()
-        except ReadOnlyFailure:
-            raise
-        except Exception:
-            raise ReadOnlyFailure("KIS_TRANSPORT_OR_JSON_ERROR") from None
+        headers = {**self.headers, "tr_id": tr_id}
+        if params.get("CTX_AREA_FK100") or params.get("CTX_AREA_NK100"):
+            headers["tr_cont"] = "N"
+        for attempt in range(3):
+            if not intraday_window_open():
+                raise ReadOnlyFailure("OUTSIDE_EXECUTION_WINDOW")
+            # KIS GET endpoints share a short request-rate boundary. Pace reads
+            # and retry only throttling/server errors; order submission retains
+            # its separate no-retry contract.
+            self.sleeper(1.0)
+            try:
+                response = self.get(self.base_url + endpoint, headers=headers,
+                                    params=params, timeout=20)
+            except Exception:
+                raise ReadOnlyFailure("KIS_TRANSPORT_ERROR") from None
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                except Exception:
+                    raise ReadOnlyFailure("KIS_JSON_ERROR") from None
+                break
+            if response.status_code != 429 and response.status_code < 500:
+                raise ReadOnlyFailure(f"KIS_HTTP_ERROR_{response.status_code}")
+            if attempt == 2:
+                raise ReadOnlyFailure(f"KIS_HTTP_ERROR_{response.status_code}")
         if not isinstance(data, dict) or data.get("rt_cd") != "0":
             raise ReadOnlyFailure("KIS_QUERY_REJECTED")
         return data, response.headers.get("tr_cont", "")
